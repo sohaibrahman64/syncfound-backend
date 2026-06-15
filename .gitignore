@@ -3,3 +3,4 @@
 .venv
 *firebase-adminsdk*.json
 __pycache__/
+uploads
