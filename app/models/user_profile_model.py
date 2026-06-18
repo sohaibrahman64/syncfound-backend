@@ -97,6 +97,11 @@ class UserProfile(Base):
         back_populates="user_profile",
         cascade="all, delete-orphan",
     )
+    industries = relationship(
+        "UserProfileIndustry",
+        back_populates="user_profile",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserProfileLocationPreference(Base):
@@ -140,3 +145,17 @@ class UserProfileCofounderSkill(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
     user_profile = relationship("UserProfile", back_populates="cofounder_skills")
+
+
+class UserProfileIndustry(Base):
+    __tablename__ = "user_profile_industries"
+    __table_args__ = (
+        UniqueConstraint("user_profile_id", "industry_id", name="uq_user_profile_industries_profile_industry"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_profile_id = Column(Integer, ForeignKey("user_profile.id", ondelete="CASCADE"), nullable=False, index=True)
+    industry_id = Column(Integer, ForeignKey("industries.id", ondelete="RESTRICT"), nullable=False, index=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    user_profile = relationship("UserProfile", back_populates="industries")

@@ -4,3 +4,5 @@
 *firebase-adminsdk*.json
 __pycache__/
 uploads
+app/__pycache__/
+app/*/__pycache__/

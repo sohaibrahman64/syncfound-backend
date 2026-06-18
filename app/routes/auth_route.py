@@ -124,6 +124,74 @@ def firebase_login(payload: FirebaseLoginRequest, db: Session = Depends(get_db))
     )
 
 
+@router.post("/auth/firebase-signin", response_model=FirebaseLoginResponse)
+def firebase_signin(payload: FirebaseLoginRequest, db: Session = Depends(get_db)):
+    try:
+        decoded_token = verify_firebase_id_token(payload.firebaseToken)
+    except (ValueError, firebase_exceptions.FirebaseError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Firebase token.",
+        ) from exc
+
+    firebase_uid = decoded_token.get("uid")
+    if not firebase_uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token does not contain a valid uid.",
+        )
+
+    user = db.query(User).filter(User.firebase_uid == firebase_uid).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    email = decoded_token.get("email")
+    full_name = decoded_token.get("name")
+    photo_url = decoded_token.get("picture")
+    email_verified = bool(decoded_token.get("email_verified", False))
+    sign_in_provider = decoded_token.get("firebase", {}).get("sign_in_provider", "firebase")
+
+    now = datetime.now(timezone.utc)
+
+    user.email = email
+    user.full_name = full_name
+    user.photo_url = photo_url
+    user.email_verified = email_verified
+    user.last_login_at = now
+
+    provider_uid = decoded_token.get("sub", firebase_uid)
+    user_authentication = (
+        db.query(UserAuthentication)
+        .filter(
+            UserAuthentication.provider == sign_in_provider,
+            UserAuthentication.provider_uid == provider_uid,
+        )
+        .first()
+    )
+
+    if user_authentication is None:
+        user_authentication = UserAuthentication(
+            user_id=user.id,
+            provider=sign_in_provider,
+            provider_uid=provider_uid,
+            last_sign_in_at=now,
+        )
+        db.add(user_authentication)
+    else:
+        user_authentication.last_sign_in_at = now
+
+    db.commit()
+    db.refresh(user)
+
+    return FirebaseLoginResponse(
+        message="Firebase sign in successful.",
+        user=user,
+    )
+
+
 @router.patch("/users/me/email", response_model=UpdateEmailResponse)
 def update_my_email(
     payload: UpdateEmailRequest,

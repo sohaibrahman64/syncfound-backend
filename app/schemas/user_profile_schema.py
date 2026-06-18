@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LocationPreferenceSelection(BaseModel):
@@ -39,6 +39,7 @@ class UserProfileUpsertRequest(BaseModel):
 
     userSkills: list[int] = Field(default_factory=list)
     cofounderSkills: list[int] = Field(default_factory=list)
+    industries: list[int] = Field(default_factory=list)
 
     title: str | None = None
     primaryRole: int = Field(gt=0)
@@ -59,6 +60,19 @@ class UserProfileUpsertRequest(BaseModel):
     startDate: datetime | None = None
     currentlyWorkHere: bool = False
     endDate: datetime | None = None
+
+    @field_validator("startDate", "endDate", mode="before")
+    @classmethod
+    def empty_string_dates_to_none(cls, value):
+        if value == "":
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def normalize_employment_dates(self):
+        if self.currentlyWorkHere:
+            self.endDate = None
+        return self
 
     linkedinUrl: str | None = None
     linkedinUsername: str | None = None

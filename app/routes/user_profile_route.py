@@ -9,6 +9,7 @@ from app.models.user_model import User
 from app.models.user_profile_model import (
     UserProfile,
     UserProfileCofounderSkill,
+    UserProfileIndustry,
     UserProfileLocationPreference,
     UserProfileUserSkill,
 )
@@ -79,7 +80,6 @@ def upsert_my_profile(
             profile = UserProfile(user_id=user.id)
             db.add(profile)
 
-        # import pdb; pdb.set_trace()  # Debugging breakpoint
         profile.first_name = payload.firstName
         profile.last_name = payload.lastName
         profile.date_of_birth = payload.dateOfBirth
@@ -152,6 +152,9 @@ def upsert_my_profile(
         db.query(UserProfileCofounderSkill).filter(
             UserProfileCofounderSkill.user_profile_id == profile.id
         ).delete(synchronize_session=False)
+        db.query(UserProfileIndustry).filter(
+            UserProfileIndustry.user_profile_id == profile.id
+        ).delete(synchronize_session=False)
 
         for location_preference in payload.locationPreference:
             db.add(
@@ -175,6 +178,14 @@ def upsert_my_profile(
                 UserProfileCofounderSkill(
                     user_profile_id=profile.id,
                     skill_id=skill_id,
+                )
+            )
+
+        for industry_id in payload.industries:
+            db.add(
+                UserProfileIndustry(
+                    user_profile_id=profile.id,
+                    industry_id=industry_id,
                 )
             )
 
