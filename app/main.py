@@ -22,6 +22,7 @@ from app.routes.linkedin_profile_route import router as linkedin_profile_router
 from app.routes.image_upload_route import router as image_upload_router
 from app.routes.user_profile_route import router as user_profile_router
 from app.routes.matches_route import router as matches_router
+from app.routes.monetization_route import router as monetization_router
 from app.services.firebase_service import initialize_firebase
 from app.services.apify_service import initialize_apify
 from app.services.storage_service import initialize_storage, is_local_storage_enabled, get_local_upload_dir
@@ -45,6 +46,8 @@ import app.models.location_type_model  # noqa: F401
 import app.models.linkedin_profile_model  # noqa: F401
 import app.models.user_profile_model  # noqa: F401
 import app.models.match_model  # noqa: F401
+import app.models.match_connection_message_model  # noqa: F401
+import app.models.monetization_model  # noqa: F401
 import logging
 
 logger = logging.getLogger(__name__)
@@ -88,6 +91,7 @@ app.include_router(linkedin_profile_router)
 app.include_router(image_upload_router)
 app.include_router(user_profile_router)
 app.include_router(matches_router)
+app.include_router(monetization_router)
 
 
 @app.on_event("startup")

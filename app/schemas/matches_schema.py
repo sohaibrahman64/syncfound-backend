@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,7 @@ class MatchItemResponse(BaseModel):
     user_role: str | None = None
     role: str | None = None
     intent_badge: str | None = None
+    bio: str | None = None
     experience_summary: str | None = None
     startup_idea: str | None = None
     user_skills: list[str] = Field(default_factory=list)
@@ -49,11 +51,20 @@ class MatchesFeedResponse(BaseModel):
 
 class MatchActionRequest(BaseModel):
     action: MatchActionType
+    connection_message: str | None = Field(default=None, max_length=1000)
+    request_id: UUID | None = None
 
 
 class MatchActionResponse(BaseModel):
     action: str
     mutual_match: bool = False
+    connection_message_saved: bool = False
+    swipe_allowed: bool = True
+    paywall_required: bool = False
+    ad_due_now: bool = False
+    plan_tier: str | None = None
+    swipes_used: int | None = None
+    swipes_remaining: int | None = None
 
 
 class LinkedInExperienceResponse(BaseModel):

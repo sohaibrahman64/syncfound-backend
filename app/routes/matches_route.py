@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import calendar
 import json
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from firebase_admin import exceptions as firebase_exceptions
@@ -16,8 +18,10 @@ from app.models.cofounder_skill_model import CofounderSkill
 from app.models.country_new_model import CountryNew
 from app.models.linkedin_profile_model import LinkedInProfile, LinkedInProfileExperience
 from app.models.industry_model import Industry
+from app.models.match_connection_message_model import MatchConnectionMessage
 from app.models.match_model import Match, MatchAction
 from app.models.matching_purpose_model import MatchingPurpose
+from app.models.monetization_model import AdTrigger, SwipeEvent, SwipeQuotaCycle, UserEntitlement
 from app.models.user_model import User
 from app.models.user_profile_model import (
     UserProfile,
@@ -41,6 +45,71 @@ from app.services.firebase_service import verify_firebase_id_token
 
 
 router = APIRouter(prefix="/api/v1", tags=["Matches"])
+
+
+FREE_TIER = "free"
+PREMIUM_TIER = "premium"
+MATCHMAKING_MODE = "matchmaking"
+COUNTED_ACTIONS = {"like", "pass"}
+DEFAULT_FREE_SWIPE_LIMIT = 10
+AD_EVERY_N_SWIPES = 4
+
+
+def _month_period_bounds(now_utc: datetime) -> tuple[datetime.date, datetime.date]:
+    period_start = now_utc.date().replace(day=1)
+    last_day = calendar.monthrange(now_utc.year, now_utc.month)[1]
+    period_end = now_utc.date().replace(day=last_day)
+    return period_start, period_end
+
+
+def _get_or_create_entitlement(db: Session, user_id: int) -> UserEntitlement:
+    entitlement = db.query(UserEntitlement).filter(UserEntitlement.user_id == user_id).first()
+    if entitlement is not None:
+        return entitlement
+
+    entitlement = UserEntitlement(
+        user_id=user_id,
+        tier=FREE_TIER,
+        ads_enabled=True,
+        matchmaking_swipe_limit=DEFAULT_FREE_SWIPE_LIMIT,
+        unlimited_swipes=False,
+        investor_intro_access=False,
+        curated_events_access=False,
+        valid_from=datetime.now(timezone.utc),
+    )
+    db.add(entitlement)
+    db.flush()
+    return entitlement
+
+
+def _get_or_create_quota_cycle(db: Session, user_id: int, free_swipe_limit: int, now_utc: datetime) -> SwipeQuotaCycle:
+    period_start, period_end = _month_period_bounds(now_utc)
+    cycle = (
+        db.query(SwipeQuotaCycle)
+        .filter(
+            SwipeQuotaCycle.user_id == user_id,
+            SwipeQuotaCycle.mode == MATCHMAKING_MODE,
+            SwipeQuotaCycle.period_start == period_start,
+            SwipeQuotaCycle.period_end == period_end,
+        )
+        .first()
+    )
+    if cycle is not None:
+        if cycle.free_swipe_limit != free_swipe_limit:
+            cycle.free_swipe_limit = free_swipe_limit
+        return cycle
+
+    cycle = SwipeQuotaCycle(
+        user_id=user_id,
+        mode=MATCHMAKING_MODE,
+        period_start=period_start,
+        period_end=period_end,
+        free_swipe_limit=free_swipe_limit,
+        swipes_used=0,
+    )
+    db.add(cycle)
+    db.flush()
+    return cycle
 
 
 def _get_authenticated_user(authorization: str, db: Session) -> User:
@@ -116,16 +185,55 @@ def _jaccard_score(left: set[int], right: set[int]) -> float:
     return len(left & right) / union_size
 
 
-def _mode_bucket(mode: MatchFeedMode, candidate_user_id: int) -> bool:
-    # Keep discover and matchmaking pools distinct without needing extra schema changes.
-    if mode == MatchFeedMode.discover:
-        return candidate_user_id % 2 == 0
-    return candidate_user_id % 2 == 1
+def _normalize_label(value: str | None) -> str:
+    if not value:
+        return ""
+    return " ".join(value.strip().lower().split())
+
+
+def _is_investor_profile(intent_badge: str | None, user_role: str | None) -> bool:
+    intent_normalized = _normalize_label(intent_badge)
+    role_normalized = _normalize_label(user_role)
+    return "investor" in intent_normalized or "investor" in role_normalized
+
+
+def _is_purpose_compatible(
+    me_intent_badge: str | None,
+    candidate_intent_badge: str | None,
+    candidate_user_role: str | None,
+) -> bool:
+    me_intent = _normalize_label(me_intent_badge)
+    candidate_intent = _normalize_label(candidate_intent_badge)
+    candidate_is_investor = _is_investor_profile(candidate_intent_badge, candidate_user_role)
+
+    if not me_intent:
+        return True
+
+    compatibility_map: dict[str, set[str]] = {
+        "build a team": {"build a team", "join a team", "connect with investors"},
+        "join a team": {"build a team", "join a team"},
+        "connect with investors": {"connect with investors"},
+    }
+
+    allowed_intents = compatibility_map.get(me_intent)
+    if allowed_intents is None:
+        return candidate_intent == me_intent
+
+    if candidate_intent in allowed_intents:
+        return True
+
+    if "connect with investors" in allowed_intents and candidate_is_investor:
+        return True
+
+    return False
 
 
 def _score_candidate(
     me_profile: UserProfile,
     candidate: MatchRow,
+    me_intent_badge: str | None,
+    candidate_intent_badge: str | None,
+    candidate_user_role: str | None,
     me_user_skills: set[int],
     me_cofounder_skills: set[int],
     me_industries: set[int],
@@ -139,46 +247,44 @@ def _score_candidate(
     elif me_profile.cofounder_role_id and candidate.cofounder_role_id and me_profile.cofounder_role_id == candidate.cofounder_role_id:
         role_component = 0.8
 
-    skills_component = _jaccard_score(me_cofounder_skills, candidate_user_skills)
-    reverse_skills_component = _jaccard_score(me_user_skills, candidate_cofounder_skills)
-    blended_skills_component = (skills_component + reverse_skills_component) / 2
+    looking_for_component = _jaccard_score(me_cofounder_skills, candidate_user_skills)
+    complementary_component = _jaccard_score(me_user_skills, candidate_cofounder_skills)
 
     industry_component = _jaccard_score(me_industries, candidate_industries)
 
     if me_profile.city_id and candidate.city_id and me_profile.city_id == candidate.city_id:
         location_component = 1.0
     elif me_profile.state_id and candidate.state_id and me_profile.state_id == candidate.state_id:
-        location_component = 0.7
+        location_component = 0.6
     else:
-        location_component = 0.3
+        location_component = 0.2
 
     if me_profile.time_commitment_id and candidate.time_commitment_id and me_profile.time_commitment_id == candidate.time_commitment_id:
         time_component = 1.0
     else:
-        time_component = 0.5
+        time_component = 0.4
 
-    if me_profile.matching_purpose_id and candidate.matching_purpose_id and me_profile.matching_purpose_id == candidate.matching_purpose_id:
-        badge_component = 1.0
-    else:
-        badge_component = 0.5
+    purpose_component = 1.0 if _is_purpose_compatible(me_intent_badge, candidate_intent_badge, candidate_user_role) else 0.0
 
     score = round(
-        (25 * role_component)
-        + (25 * blended_skills_component)
-        + (20 * industry_component)
-        + (15 * location_component)
-        + (10 * time_component)
-        + (5 * badge_component),
+        (35 * purpose_component)
+        + (35 * looking_for_component)
+        + (10 * complementary_component)
+        + (10 * role_component)
+        + (5 * industry_component)
+        + (3 * time_component)
+        + (2 * location_component),
         2,
     )
 
     reasons = [
+        f"purpose={purpose_component:.2f}",
         f"role={role_component:.2f}",
-        f"skills={blended_skills_component:.2f}",
+        f"looking_for_skills={looking_for_component:.2f}",
+        f"complementary_skills={complementary_component:.2f}",
         f"industry={industry_component:.2f}",
         f"location={location_component:.2f}",
         f"time={time_component:.2f}",
-        f"intent={badge_component:.2f}",
     ]
     return score, reasons
 
@@ -274,13 +380,20 @@ def get_matches_feed(
         .all()
     }
 
+    me_intent_badge = None
+    if me_profile.matching_purpose_id is not None:
+        me_intent_badge = (
+            db.query(MatchingPurpose.matching_purpose)
+            .filter(MatchingPurpose.id == me_profile.matching_purpose_id)
+            .scalar()
+        )
+
     profile_ids = [row.profile_id for row in rows]
     linkedin_profile_ids = [row.linkedin_profile_id for row in rows if row.linkedin_profile_id is not None]
 
     candidate_user_roles_map: dict[int, str | None] = {}
     candidate_user_skills_map: dict[int, set[int]] = {}
     candidate_user_skill_names_map: dict[int, list[str]] = {}
-    candidate_user_skills_map: dict[int, set[int]] = {}
     candidate_cofounder_skills_map: dict[int, set[int]] = {}
     candidate_cofounder_skill_names_map: dict[int, list[str]] = {}
     candidate_industries_map: dict[int, set[int]] = {}
@@ -421,7 +534,13 @@ def get_matches_feed(
 
     feed_items: list[MatchItemResponse] = []
     for row in rows:
-        if not _mode_bucket(mode=mode, candidate_user_id=row.candidate_id):
+        candidate_user_role = candidate_user_roles_map.get(row.profile_id)
+
+        if mode == MatchFeedMode.matchmaking and not _is_purpose_compatible(
+            me_intent_badge=me_intent_badge,
+            candidate_intent_badge=row.intent_badge,
+            candidate_user_role=candidate_user_role,
+        ):
             continue
 
         candidate_row = MatchRow(
@@ -445,16 +564,23 @@ def get_matches_feed(
             state_id=row.state_id,
         )
 
-        score, reasons = _score_candidate(
-            me_profile=me_profile,
-            candidate=candidate_row,
-            me_user_skills=my_user_skill_ids,
-            me_cofounder_skills=my_cofounder_skill_ids,
-            me_industries=my_industry_ids,
-            candidate_user_skills=candidate_user_skills_map.get(row.profile_id, set()),
-            candidate_cofounder_skills=candidate_cofounder_skills_map.get(row.profile_id, set()),
-            candidate_industries=candidate_industries_map.get(row.profile_id, set()),
-        )
+        if mode == MatchFeedMode.discover:
+            score = float(row.candidate_id)
+            reasons = ["discover_mode"]
+        else:
+            score, reasons = _score_candidate(
+                me_profile=me_profile,
+                candidate=candidate_row,
+                me_intent_badge=me_intent_badge,
+                candidate_intent_badge=row.intent_badge,
+                candidate_user_role=candidate_user_role,
+                me_user_skills=my_user_skill_ids,
+                me_cofounder_skills=my_cofounder_skill_ids,
+                me_industries=my_industry_ids,
+                candidate_user_skills=candidate_user_skills_map.get(row.profile_id, set()),
+                candidate_cofounder_skills=candidate_cofounder_skills_map.get(row.profile_id, set()),
+                candidate_industries=candidate_industries_map.get(row.profile_id, set()),
+            )
 
         feed_items.append(
             MatchItemResponse(
@@ -464,9 +590,10 @@ def get_matches_feed(
                 country_code=row.country_code,
                 city=row.city,
                 location_text=row.location_text,
-                user_role=candidate_user_roles_map.get(row.profile_id),
+                user_role=candidate_user_role,
                 role=row.role,
                 intent_badge=row.intent_badge,
+                bio=row.experience_summary,
                 experience_summary=row.experience_summary,
                 startup_idea=row.startup_idea,
                 user_skills=candidate_user_skill_names_map.get(row.profile_id, []),
@@ -514,6 +641,7 @@ def post_match_action(
     db: Session = Depends(get_db),
 ):
     user = _get_authenticated_user(authorization=authorization, db=db)
+    now_utc = datetime.now(timezone.utc)
 
     if candidate_id == user.id:
         raise HTTPException(
@@ -529,8 +657,41 @@ def post_match_action(
         )
 
     mutual_match = False
+    connection_message_saved = False
+    ad_due_now = False
+
+    entitlement = _get_or_create_entitlement(db=db, user_id=user.id)
+    plan_tier = entitlement.tier
+    swipe_allowed = True
+    paywall_required = False
+    swipes_used: int | None = None
+    swipes_remaining: int | None = None
+
+    normalized_connection_message = payload.connection_message.strip() if payload.connection_message else None
+    if normalized_connection_message == "":
+        normalized_connection_message = None
+
+    if normalized_connection_message and payload.action.value != "like":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="connection_message is only allowed when action is like.",
+        )
 
     if payload.action.value == "unsave":
+        request_id = str(payload.request_id) if payload.request_id else str(uuid4())
+
+        db.add(
+            SwipeEvent(
+                user_id=user.id,
+                target_user_id=candidate_id,
+                mode=MATCHMAKING_MODE,
+                action="unsave",
+                is_counted=False,
+                counted_swipe_number=None,
+                quota_cycle_id=None,
+                request_id=request_id,
+            )
+        )
         (
             db.query(MatchAction)
             .filter(
@@ -541,16 +702,119 @@ def post_match_action(
             .delete(synchronize_session=False)
         )
         db.commit()
-        return MatchActionResponse(action="unsave", mutual_match=False)
-
-    db.add(
-        MatchAction(
-            actor_user_id=user.id,
-            target_user_id=candidate_id,
-            action=payload.action.value,
+        return MatchActionResponse(
+            action="unsave",
+            mutual_match=False,
+            connection_message_saved=False,
+            swipe_allowed=True,
+            paywall_required=False,
+            ad_due_now=False,
+            plan_tier=plan_tier,
+            swipes_used=None,
+            swipes_remaining=None,
         )
+
+    is_counted_action = payload.action.value in COUNTED_ACTIONS
+    quota_cycle: SwipeQuotaCycle | None = None
+    counted_swipe_number: int | None = None
+
+    if is_counted_action and not entitlement.unlimited_swipes:
+        free_swipe_limit = entitlement.matchmaking_swipe_limit or DEFAULT_FREE_SWIPE_LIMIT
+        quota_cycle = _get_or_create_quota_cycle(
+            db=db,
+            user_id=user.id,
+            free_swipe_limit=free_swipe_limit,
+            now_utc=now_utc,
+        )
+
+        if quota_cycle.swipes_used >= quota_cycle.free_swipe_limit:
+            swipe_allowed = False
+            paywall_required = True
+            swipes_used = quota_cycle.swipes_used
+            swipes_remaining = 0
+
+            request_id = str(payload.request_id) if payload.request_id else str(uuid4())
+            db.add(
+                SwipeEvent(
+                    user_id=user.id,
+                    target_user_id=candidate_id,
+                    mode=MATCHMAKING_MODE,
+                    action=payload.action.value,
+                    is_counted=False,
+                    counted_swipe_number=None,
+                    quota_cycle_id=quota_cycle.id,
+                    request_id=request_id,
+                )
+            )
+            db.commit()
+
+            return MatchActionResponse(
+                action=payload.action.value,
+                mutual_match=False,
+                connection_message_saved=False,
+                swipe_allowed=swipe_allowed,
+                paywall_required=paywall_required,
+                ad_due_now=False,
+                plan_tier=plan_tier,
+                swipes_used=swipes_used,
+                swipes_remaining=swipes_remaining,
+            )
+
+        quota_cycle.swipes_used += 1
+        counted_swipe_number = quota_cycle.swipes_used
+        swipes_used = quota_cycle.swipes_used
+        swipes_remaining = max(quota_cycle.free_swipe_limit - quota_cycle.swipes_used, 0)
+
+    match_action = MatchAction(
+        actor_user_id=user.id,
+        target_user_id=candidate_id,
+        action=payload.action.value,
     )
+    db.add(match_action)
     db.flush()
+
+    request_id = str(payload.request_id) if payload.request_id else str(uuid4())
+    swipe_event = SwipeEvent(
+        user_id=user.id,
+        target_user_id=candidate_id,
+        mode=MATCHMAKING_MODE,
+        action=payload.action.value,
+        is_counted=bool(is_counted_action and not entitlement.unlimited_swipes),
+        counted_swipe_number=counted_swipe_number,
+        quota_cycle_id=quota_cycle.id if quota_cycle else None,
+        request_id=request_id,
+    )
+    db.add(swipe_event)
+    db.flush()
+
+    if (
+        swipe_event.is_counted
+        and swipe_event.counted_swipe_number is not None
+        and entitlement.ads_enabled
+        and swipe_event.counted_swipe_number % AD_EVERY_N_SWIPES == 0
+    ):
+        ad_due_now = True
+        db.add(
+            AdTrigger(
+                user_id=user.id,
+                swipe_event_id=swipe_event.id,
+                quota_cycle_id=quota_cycle.id if quota_cycle else None,
+                trigger_after_swipe_number=swipe_event.counted_swipe_number,
+                ad_placement="matchmaking_interstitial",
+                status="pending",
+            )
+        )
+
+    if payload.action.value == "like" and normalized_connection_message:
+        db.add(
+            MatchConnectionMessage(
+                from_user_id=user.id,
+                to_user_id=candidate_id,
+                match_action_id=match_action.id,
+                message=normalized_connection_message,
+            )
+        )
+        connection_message_saved = True
 
     if payload.action.value == "like":
         reverse_like = (
@@ -576,7 +840,17 @@ def post_match_action(
 
     db.commit()
 
-    return MatchActionResponse(action=payload.action.value, mutual_match=mutual_match)
+    return MatchActionResponse(
+        action=payload.action.value,
+        mutual_match=mutual_match,
+        connection_message_saved=connection_message_saved,
+        swipe_allowed=swipe_allowed,
+        paywall_required=paywall_required,
+        ad_due_now=ad_due_now,
+        plan_tier=plan_tier,
+        swipes_used=swipes_used,
+        swipes_remaining=swipes_remaining,
+    )
 
 
 @router.get("/users/me/matches/summary", response_model=MatchSummaryResponse)
@@ -601,8 +875,8 @@ def get_match_summary(
         .all()
     ]
 
-    discover_count = sum(1 for candidate_id in unseen_candidate_ids if candidate_id % 2 == 0)
-    matchmaking_count = sum(1 for candidate_id in unseen_candidate_ids if candidate_id % 2 == 1)
+    discover_count = len(unseen_candidate_ids)
+    matchmaking_count = len(unseen_candidate_ids)
 
     return MatchSummaryResponse(
         discover_count=discover_count,
