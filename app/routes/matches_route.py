@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import calendar
 import json
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -55,10 +54,10 @@ DEFAULT_FREE_SWIPE_LIMIT = 10
 AD_EVERY_N_SWIPES = 4
 
 
-def _month_period_bounds(now_utc: datetime) -> tuple[datetime.date, datetime.date]:
-    period_start = now_utc.date().replace(day=1)
-    last_day = calendar.monthrange(now_utc.year, now_utc.month)[1]
-    period_end = now_utc.date().replace(day=last_day)
+def _day_period_bounds(now_utc: datetime) -> tuple[datetime.date, datetime.date]:
+    # Quota cycles are tracked by UTC calendar day in the current schema.
+    period_start = now_utc.date()
+    period_end = now_utc.date()
     return period_start, period_end
 
 
@@ -83,7 +82,7 @@ def _get_or_create_entitlement(db: Session, user_id: int) -> UserEntitlement:
 
 
 def _get_or_create_quota_cycle(db: Session, user_id: int, free_swipe_limit: int, now_utc: datetime) -> SwipeQuotaCycle:
-    period_start, period_end = _month_period_bounds(now_utc)
+    period_start, period_end = _day_period_bounds(now_utc)
     cycle = (
         db.query(SwipeQuotaCycle)
         .filter(
