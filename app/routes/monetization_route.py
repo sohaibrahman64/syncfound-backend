@@ -81,7 +81,7 @@ def _upsert_free_entitlement_if_missing(db: Session, user_id: int) -> UserEntitl
         user_id=user_id,
         tier="free",
         ads_enabled=True,
-        matchmaking_swipe_limit=10,
+        matchmaking_swipe_limit=9,
         unlimited_swipes=False,
         investor_intro_access=False,
         curated_events_access=False,

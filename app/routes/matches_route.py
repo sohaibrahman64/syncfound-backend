@@ -50,7 +50,7 @@ FREE_TIER = "free"
 PREMIUM_TIER = "premium"
 MATCHMAKING_MODE = "matchmaking"
 COUNTED_ACTIONS = {"like", "pass"}
-DEFAULT_FREE_SWIPE_LIMIT = 10
+DEFAULT_FREE_SWIPE_LIMIT = 9
 AD_EVERY_N_SWIPES = 4
 
 
@@ -658,7 +658,6 @@ def post_match_action(
     mutual_match = False
     connection_message_saved = False
     ad_due_now = False
-
     entitlement = _get_or_create_entitlement(db=db, user_id=user.id)
     plan_tier = entitlement.tier
     swipe_allowed = True
