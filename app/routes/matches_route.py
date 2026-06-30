@@ -15,12 +15,14 @@ from app.models.city_model import City
 from app.models.cofounder_role_model import CofounderRole
 from app.models.cofounder_skill_model import CofounderSkill
 from app.models.country_new_model import CountryNew
+from app.models.invite_model import Invite
 from app.models.linkedin_profile_model import LinkedInProfile, LinkedInProfileExperience
 from app.models.industry_model import Industry
 from app.models.match_connection_message_model import MatchConnectionMessage
 from app.models.match_model import Match, MatchAction
 from app.models.matching_purpose_model import MatchingPurpose
 from app.models.monetization_model import AdTrigger, SwipeEvent, SwipeQuotaCycle, UserEntitlement
+from app.models.notification_outbox_model import NotificationOutbox
 from app.models.user_model import User
 from app.models.user_profile_model import (
     UserProfile,
@@ -654,7 +656,6 @@ def post_match_action(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Candidate not found.",
         )
-
     mutual_match = False
     connection_message_saved = False
     ad_due_now = False
@@ -824,17 +825,114 @@ def post_match_action(
             )
             .first()
         )
+
+        match_row: Match | None = None
         if reverse_like is not None:
             mutual_match = True
             user_a_id = min(user.id, candidate_id)
             user_b_id = max(user.id, candidate_id)
-            existing_match = (
-                db.query(Match.id)
+            match_row = (
+                db.query(Match)
                 .filter(Match.user_a_id == user_a_id, Match.user_b_id == user_b_id)
                 .first()
             )
-            if existing_match is None:
-                db.add(Match(user_a_id=user_a_id, user_b_id=user_b_id))
+            if match_row is None:
+                match_row = Match(user_a_id=user_a_id, user_b_id=user_b_id)
+                db.add(match_row)
+                db.flush()
+
+        now_utc_invite = datetime.now(timezone.utc)
+        existing_forward_invite = (
+            db.query(Invite)
+            .filter(
+                Invite.sender_user_id == user.id,
+                Invite.recipient_user_id == candidate_id,
+                Invite.status == "pending",
+            )
+            .first()
+        )
+
+        if mutual_match and match_row is not None:
+            if existing_forward_invite is not None:
+                existing_forward_invite.status = "accepted"
+                existing_forward_invite.responded_at = now_utc_invite
+                existing_forward_invite.mutual_match_id = match_row.id
+            else:
+                db.add(
+                    Invite(
+                        public_id=f"inv_{uuid4().hex[:16]}",
+                        sender_user_id=user.id,
+                        recipient_user_id=candidate_id,
+                        source_match_action_id=match_action.id,
+                        source_request_id=request_id,
+                        status="accepted",
+                        message=normalized_connection_message,
+                        responded_at=now_utc_invite,
+                        mutual_match_id=match_row.id,
+                    )
+                )
+
+            reverse_invite = (
+                db.query(Invite)
+                .filter(
+                    Invite.sender_user_id == candidate_id,
+                    Invite.recipient_user_id == user.id,
+                    Invite.status == "pending",
+                )
+                .first()
+            )
+            if reverse_invite is not None:
+                reverse_invite.status = "accepted"
+                reverse_invite.responded_at = now_utc_invite
+                reverse_invite.mutual_match_id = match_row.id
+                db.add(
+                    NotificationOutbox(
+                        event_id=str(uuid4()),
+                        event_type="invite.accepted",
+                        recipient_user_id=candidate_id,
+                        invite_id=reverse_invite.id,
+                        payload={
+                            "type": "invite.accepted",
+                            "invite_id": reverse_invite.public_id,
+                            "recipient_user_id": candidate_id,
+                            "actor_user_id": user.id,
+                            "title": "Invite accepted",
+                            "body": "Your invitation was accepted!",
+                            "deep_link": f"syncfound://invites/sent?invite_id={reverse_invite.public_id}",
+                        },
+                        status="pending",
+                    )
+                )
+        elif not mutual_match and existing_forward_invite is None:
+            forward_invite = Invite(
+                public_id=f"inv_{uuid4().hex[:16]}",
+                sender_user_id=user.id,
+                recipient_user_id=candidate_id,
+                source_match_action_id=match_action.id,
+                source_request_id=request_id,
+                status="pending",
+                message=normalized_connection_message,
+            )
+            db.add(forward_invite)
+            db.flush()
+            db.add(
+                NotificationOutbox(
+                    event_id=str(uuid4()),
+                    event_type="invite.created",
+                    recipient_user_id=candidate_id,
+                    invite_id=forward_invite.id,
+                    payload={
+                        "type": "invite.created",
+                        "invite_id": forward_invite.public_id,
+                        "recipient_user_id": candidate_id,
+                        "sender_user_id": user.id,
+                        "title": "New invitation",
+                        "body": "Someone invited you to connect",
+                        "deep_link": f"syncfound://invites?invite_id={forward_invite.public_id}",
+                    },
+                    status="pending",
+                )
+            )
 
     db.commit()
 

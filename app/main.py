@@ -20,6 +20,8 @@ from app.routes.employment_type_route import router as employment_type_router
 from app.routes.location_type_route import router as location_type_router
 from app.routes.linkedin_profile_route import router as linkedin_profile_router
 from app.routes.image_upload_route import router as image_upload_router
+from app.routes.device_token_route import router as device_token_router
+from app.routes.invites_route import router as invites_router
 from app.routes.user_profile_route import router as user_profile_router
 from app.routes.matches_route import router as matches_router
 from app.routes.monetization_route import router as monetization_router
@@ -48,6 +50,9 @@ import app.models.user_profile_model  # noqa: F401
 import app.models.match_model  # noqa: F401
 import app.models.match_connection_message_model  # noqa: F401
 import app.models.monetization_model  # noqa: F401
+import app.models.invite_model  # noqa: F401
+import app.models.user_device_token_model  # noqa: F401
+import app.models.notification_outbox_model  # noqa: F401
 import logging
 
 logger = logging.getLogger(__name__)
@@ -90,8 +95,10 @@ app.include_router(location_type_router)
 app.include_router(linkedin_profile_router)
 app.include_router(image_upload_router)
 app.include_router(user_profile_router)
+app.include_router(invites_router)
 app.include_router(matches_router)
 app.include_router(monetization_router)
+app.include_router(device_token_router)
 
 
 @app.on_event("startup")
