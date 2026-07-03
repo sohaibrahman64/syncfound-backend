@@ -151,6 +151,13 @@ VALID_MUTATE_ACTIONS = {"accept", "decline", "mark_read"}
 class InviteMutateRequest(BaseModel):
     action: str = Field(..., description="accept | decline | mark_read")
     request_id: UUID | None = None
+    acceptance_message: str | None = Field(default=None, max_length=1000)
+
+
+class InviteMutateChat(BaseModel):
+    conversation_id: str
+    initial_message_id: str | None = None
+    initial_message_kind: str | None = None
 
 
 class InviteMutateResponse(BaseModel):
@@ -159,6 +166,7 @@ class InviteMutateResponse(BaseModel):
     updated_at: datetime
     mutual_match: bool = False
     match_id: int | None = None
+    chat: InviteMutateChat | None = None
 
 
 class InviteWithdrawRequest(BaseModel):

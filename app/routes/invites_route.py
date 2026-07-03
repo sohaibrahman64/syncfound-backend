@@ -19,6 +19,7 @@ from app.models.industry_model import Industry
 from app.models.invite_model import Invite
 from app.models.linkedin_profile_model import LinkedInProfile, LinkedInProfileExperience
 from app.models.linkedin_profile_model import LinkedInProfileEducation
+from app.models.match_connection_message_model import MatchConnectionMessage
 from app.models.match_model import Match, MatchAction
 from app.models.notification_outbox_model import NotificationOutbox
 from app.models.matching_purpose_model import MatchingPurpose
@@ -35,6 +36,7 @@ from app.schemas.invites_schema import (
     InviteUserDetailsResponse,
     InviteMutateRequest,
     InviteMutateResponse,
+    InviteMutateChat,
     InviteProfileCard,
     InviteWithdrawRequest,
     InviteWithdrawResponse,
@@ -48,6 +50,7 @@ from app.schemas.invites_schema import (
     SentInviteListResponse,
     VALID_MUTATE_ACTIONS,
 )
+from app.services.chat_service import create_conversation_message, ensure_conversation_participants, get_or_create_direct_conversation, link_match_to_conversation
 from app.services.firebase_service import verify_firebase_id_token
 
 
@@ -672,6 +675,14 @@ def mutate_invite(
 
     if payload.action not in VALID_MUTATE_ACTIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action.")
+    normalized_acceptance_message = payload.acceptance_message.strip() if payload.acceptance_message else None
+    if normalized_acceptance_message == "":
+        normalized_acceptance_message = None
+    if normalized_acceptance_message and payload.action != "accept":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="acceptance_message is only allowed when action is accept.",
+        )
 
     invite = db.query(Invite).filter(Invite.public_id == public_id).first()
     if invite is None:
@@ -683,6 +694,7 @@ def mutate_invite(
     now_utc = datetime.now(timezone.utc)
     mutual_match = False
     match_id: int | None = None
+    chat_info: InviteMutateChat | None = None
 
     if payload.action == "mark_read":
         if invite.read_at is None:
@@ -702,9 +714,29 @@ def mutate_invite(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invalid transition.")
 
     if payload.action == "accept":
+        normalized_invite_message = invite.message.strip() if invite.message else None
+        if normalized_invite_message == "":
+            normalized_invite_message = None
+
         invite.status = "accepted"
         invite.responded_at = now_utc
         invite.updated_at = now_utc
+
+        if normalized_acceptance_message:
+            if invite.source_match_action_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Invite is missing the source match action required to save an acceptance message.",
+                )
+            # This records the receiver's acceptance note to the original sender.
+            db.add(
+                MatchConnectionMessage(
+                    from_user_id=invite.recipient_user_id,
+                    to_user_id=invite.sender_user_id,
+                    match_action_id=invite.source_match_action_id,
+                    message=normalized_acceptance_message,
+                )
+            )
 
         user_a_id = min(invite.sender_user_id, invite.recipient_user_id)
         user_b_id = max(invite.sender_user_id, invite.recipient_user_id)
@@ -717,6 +749,54 @@ def mutate_invite(
         mutual_match = True
         match_id = match_row.id
 
+        conversation = get_or_create_direct_conversation(
+            db=db,
+            user_one_id=invite.sender_user_id,
+            user_two_id=invite.recipient_user_id,
+            created_by_user_id=invite.recipient_user_id,
+            created_from_invite_id=invite.id,
+        )
+        ensure_conversation_participants(
+            db=db,
+            conversation_id=conversation.id,
+            participant_user_ids=[invite.sender_user_id, invite.recipient_user_id],
+        )
+        link_match_to_conversation(db=db, match_id=match_row.id, conversation_id=conversation.id)
+
+        if normalized_invite_message:
+            create_conversation_message(
+                db=db,
+                conversation_id=conversation.id,
+                sender_user_id=invite.sender_user_id,
+                message_kind="text",
+                message_text=normalized_invite_message,
+                source="invite_create",
+                source_invite_id=invite.id,
+                source_match_id=match_row.id,
+                idempotency_key=f"invite_create:{invite.id}:{invite.sender_user_id}",
+            )
+
+        initial_message_id = None
+        if normalized_acceptance_message:
+            acceptance_message_row = create_conversation_message(
+                db=db,
+                conversation_id=conversation.id,
+                sender_user_id=invite.recipient_user_id,
+                message_kind="acceptance_note",
+                message_text=normalized_acceptance_message,
+                source="invite_accept",
+                source_invite_id=invite.id,
+                source_match_id=match_row.id,
+                idempotency_key=f"invite_accept:{invite.id}:{invite.recipient_user_id}",
+            )
+            initial_message_id = acceptance_message_row.public_id
+
+        chat_info = InviteMutateChat(
+            conversation_id=str(conversation.public_id),
+            initial_message_id=str(initial_message_id) if initial_message_id else None,
+            initial_message_kind="acceptance_note" if initial_message_id else None,
+        )
+
         db.add(
             NotificationOutbox(
                 event_id=str(uuid4()),
@@ -728,6 +808,7 @@ def mutate_invite(
                     "invite_id": invite.public_id,
                     "recipient_user_id": invite.sender_user_id,
                     "actor_user_id": invite.recipient_user_id,
+                    "conversation_id": str(conversation.public_id),
                     "title": "Invite accepted",
                     "body": "Your invitation was accepted!",
                     "deep_link": f"syncfound://invites/sent?invite_id={invite.public_id}",
@@ -767,6 +848,7 @@ def mutate_invite(
         updated_at=invite.updated_at,
         mutual_match=mutual_match,
         match_id=match_id,
+        chat=chat_info,
     )
 
 
