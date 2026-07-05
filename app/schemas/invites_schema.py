@@ -87,6 +87,8 @@ class ReceivedInviteEntry(BaseModel):
     invite: InviteItem
     performed_by_profile: InviteProfileCard
     from_profile: InviteProfileCard
+    is_locked: bool = False
+    lock_reason: str | None = None
     source_profile_details: InviteUserDetailsResponse | None = None
 
 
@@ -94,12 +96,17 @@ class ReceivedInviteListResponse(BaseModel):
     items: list[ReceivedInviteEntry]
     next_cursor: str | None = None
     has_more: bool
+    plan_tier: str | None = None
+    paywall_required: bool = False
+    remaining_unlocks_today: int | None = None
 
 
 class SentInviteEntry(BaseModel):
     invite: InviteItem
     performed_by_profile: InviteProfileCard
     to_profile: InviteProfileCard
+    is_locked: bool = False
+    lock_reason: str | None = None
     target_profile_details: InviteUserDetailsResponse | None = None
 
 
@@ -107,6 +114,9 @@ class SentInviteListResponse(BaseModel):
     items: list[SentInviteEntry]
     next_cursor: str | None = None
     has_more: bool
+    plan_tier: str | None = None
+    paywall_required: bool = False
+    remaining_unlocks_today: int | None = None
 
 
 class SavedEntry(BaseModel):
@@ -114,6 +124,8 @@ class SavedEntry(BaseModel):
     saved_at: datetime
     performed_by_profile: InviteProfileCard
     profile: InviteProfileCard
+    is_locked: bool = False
+    lock_reason: str | None = None
     target_profile_details: InviteUserDetailsResponse | None = None
 
 
@@ -121,6 +133,9 @@ class SavedListResponse(BaseModel):
     items: list[SavedEntry]
     next_cursor: str | None = None
     has_more: bool
+    plan_tier: str | None = None
+    paywall_required: bool = False
+    remaining_unlocks_today: int | None = None
 
 
 class PassedEntry(BaseModel):
@@ -128,6 +143,8 @@ class PassedEntry(BaseModel):
     passed_at: datetime
     performed_by_profile: InviteProfileCard
     profile: InviteProfileCard
+    is_locked: bool = False
+    lock_reason: str | None = None
     target_profile_details: InviteUserDetailsResponse | None = None
 
 
@@ -135,6 +152,9 @@ class PassedListResponse(BaseModel):
     items: list[PassedEntry]
     next_cursor: str | None = None
     has_more: bool
+    plan_tier: str | None = None
+    paywall_required: bool = False
+    remaining_unlocks_today: int | None = None
 
 
 class InviteCountsResponse(BaseModel):

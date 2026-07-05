@@ -21,6 +21,7 @@ from app.models.linkedin_profile_model import LinkedInProfile, LinkedInProfileEx
 from app.models.linkedin_profile_model import LinkedInProfileEducation
 from app.models.match_connection_message_model import MatchConnectionMessage
 from app.models.match_model import Match, MatchAction
+from app.models.monetization_model import UserEntitlement
 from app.models.notification_outbox_model import NotificationOutbox
 from app.models.matching_purpose_model import MatchingPurpose
 from app.models.time_commitment_model import TimeCommitment
@@ -58,6 +59,8 @@ router = APIRouter(prefix="/api/v1", tags=["Invites"])
 
 _INVITE_STATUSES = {"pending", "accepted", "declined", "withdrawn", "expired", "all"}
 _TERMINAL_STATUSES = {"accepted", "declined", "withdrawn", "expired"}
+FREE_TIER = "free"
+PREMIUM_TIER = "premium"
 
 
 def _get_authenticated_user(authorization: str, db: Session) -> User:
@@ -95,6 +98,30 @@ def _get_authenticated_user(authorization: str, db: Session) -> User:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     return user
+
+
+def _get_or_create_entitlement(db: Session, user_id: int) -> UserEntitlement:
+    entitlement = db.query(UserEntitlement).filter(UserEntitlement.user_id == user_id).first()
+    if entitlement is not None:
+        return entitlement
+
+    entitlement = UserEntitlement(
+        user_id=user_id,
+        tier=FREE_TIER,
+        ads_enabled=True,
+        matchmaking_swipe_limit=9,
+        unlimited_swipes=False,
+        investor_intro_access=False,
+        curated_events_access=False,
+        valid_from=datetime.now(timezone.utc),
+    )
+    db.add(entitlement)
+    db.flush()
+    return entitlement
+
+
+def _can_view_invite_full_profile(entitlement: UserEntitlement) -> bool:
+    return entitlement.tier == PREMIUM_TIER
 
 
 def _build_list_cursor(created_at: datetime, row_id: int) -> str:
@@ -403,6 +430,8 @@ def get_received_invites(
     db: Session = Depends(get_db),
 ):
     user = _get_authenticated_user(authorization=authorization, db=db)
+    entitlement = _get_or_create_entitlement(db=db, user_id=user.id)
+    can_view_full_profile = _can_view_invite_full_profile(entitlement)
 
     if filter_status not in _INVITE_STATUSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status.")
@@ -436,7 +465,9 @@ def get_received_invites(
             ),
             performed_by_profile=cards.get(row.sender_user_id, _empty_card(row.sender_user_id)),
             from_profile=cards.get(row.sender_user_id, _empty_card(row.sender_user_id)),
-            source_profile_details=source_details_map.get(row.sender_user_id),
+            is_locked=not can_view_full_profile,
+            lock_reason=None if can_view_full_profile else "upgrade_required_to_view_full_profile",
+            source_profile_details=source_details_map.get(row.sender_user_id) if can_view_full_profile else None,
         )
         for row in rows
     ]
@@ -446,7 +477,14 @@ def get_received_invites(
         last = rows[-1]
         next_cursor = _build_list_cursor(last.created_at, last.id)
 
-    return ReceivedInviteListResponse(items=items, next_cursor=next_cursor, has_more=has_more)
+    return ReceivedInviteListResponse(
+        items=items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        plan_tier=entitlement.tier,
+        paywall_required=not can_view_full_profile,
+        remaining_unlocks_today=0 if not can_view_full_profile else None,
+    )
 
 
 @router.get("/users/me/invites/sent", response_model=SentInviteListResponse)
@@ -458,6 +496,8 @@ def get_sent_invites(
     db: Session = Depends(get_db),
 ):
     user = _get_authenticated_user(authorization=authorization, db=db)
+    entitlement = _get_or_create_entitlement(db=db, user_id=user.id)
+    can_view_full_profile = _can_view_invite_full_profile(entitlement)
 
     if filter_status not in _INVITE_STATUSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status.")
@@ -492,7 +532,9 @@ def get_sent_invites(
             ),
             performed_by_profile=actor,
             to_profile=cards.get(row.recipient_user_id, _empty_card(row.recipient_user_id)),
-            target_profile_details=target_details_map.get(row.recipient_user_id),
+            is_locked=not can_view_full_profile,
+            lock_reason=None if can_view_full_profile else "upgrade_required_to_view_full_profile",
+            target_profile_details=target_details_map.get(row.recipient_user_id) if can_view_full_profile else None,
         )
         for row in rows
     ]
@@ -502,7 +544,14 @@ def get_sent_invites(
         last = rows[-1]
         next_cursor = _build_list_cursor(last.created_at, last.id)
 
-    return SentInviteListResponse(items=items, next_cursor=next_cursor, has_more=has_more)
+    return SentInviteListResponse(
+        items=items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        plan_tier=entitlement.tier,
+        paywall_required=not can_view_full_profile,
+        remaining_unlocks_today=0 if not can_view_full_profile else None,
+    )
 
 
 @router.get("/users/me/saved", response_model=SavedListResponse)
@@ -513,6 +562,8 @@ def get_saved_profiles(
     db: Session = Depends(get_db),
 ):
     user = _get_authenticated_user(authorization=authorization, db=db)
+    entitlement = _get_or_create_entitlement(db=db, user_id=user.id)
+    can_view_full_profile = _can_view_invite_full_profile(entitlement)
 
     query = db.query(MatchAction).filter(MatchAction.actor_user_id == user.id, MatchAction.action == "save")
 
@@ -534,7 +585,9 @@ def get_saved_profiles(
             saved_at=row.created_at,
             performed_by_profile=actor,
             profile=cards.get(row.target_user_id, _empty_card(row.target_user_id)),
-            target_profile_details=target_details_map.get(row.target_user_id),
+            is_locked=not can_view_full_profile,
+            lock_reason=None if can_view_full_profile else "upgrade_required_to_view_full_profile",
+            target_profile_details=target_details_map.get(row.target_user_id) if can_view_full_profile else None,
         )
         for row in rows
     ]
@@ -544,7 +597,14 @@ def get_saved_profiles(
         last = rows[-1]
         next_cursor = _build_list_cursor(last.created_at, last.id)
 
-    return SavedListResponse(items=items, next_cursor=next_cursor, has_more=has_more)
+    return SavedListResponse(
+        items=items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        plan_tier=entitlement.tier,
+        paywall_required=not can_view_full_profile,
+        remaining_unlocks_today=0 if not can_view_full_profile else None,
+    )
 
 
 @router.get("/users/me/passed", response_model=PassedListResponse)
@@ -555,6 +615,8 @@ def get_passed_profiles(
     db: Session = Depends(get_db),
 ):
     user = _get_authenticated_user(authorization=authorization, db=db)
+    entitlement = _get_or_create_entitlement(db=db, user_id=user.id)
+    can_view_full_profile = _can_view_invite_full_profile(entitlement)
 
     cursor_tuple = _parse_list_cursor(cursor)
 
@@ -622,7 +684,9 @@ def get_passed_profiles(
             passed_at=item["event_at"],
             performed_by_profile=actor,
             profile=cards.get(item["target_user_id"], _empty_card(item["target_user_id"])),
-            target_profile_details=target_details_map.get(item["target_user_id"]),
+            is_locked=not can_view_full_profile,
+            lock_reason=None if can_view_full_profile else "upgrade_required_to_view_full_profile",
+            target_profile_details=target_details_map.get(item["target_user_id"]) if can_view_full_profile else None,
         )
         for item in merged_events
     ]
@@ -632,7 +696,14 @@ def get_passed_profiles(
         last = merged_events[-1]
         next_cursor = _build_list_cursor(last["event_at"], last["event_id"])
 
-    return PassedListResponse(items=items, next_cursor=next_cursor, has_more=has_more)
+    return PassedListResponse(
+        items=items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        plan_tier=entitlement.tier,
+        paywall_required=not can_view_full_profile,
+        remaining_unlocks_today=0 if not can_view_full_profile else None,
+    )
 
 
 @router.get("/users/me/invites/counts", response_model=InviteCountsResponse)
