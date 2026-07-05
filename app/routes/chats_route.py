@@ -29,6 +29,7 @@ from app.schemas.chat_schema import (
     SendChatMessageRequest,
     SendChatMessageResponse,
 )
+from app.services.chat_event_service import emit_chat_message_created_event, emit_chat_read_event
 from app.services.chat_service import create_conversation_message, upsert_conversation_read
 from app.services.firebase_service import verify_firebase_id_token
 
@@ -398,6 +399,15 @@ def send_chat_message(
     db.commit()
     db.refresh(message)
 
+    recipient_user_id = conversation.user_b_id if conversation.user_a_id == user.id else conversation.user_a_id
+    emit_chat_message_created_event(
+        db=db,
+        conversation=conversation,
+        message=message,
+        sender_user_id=user.id,
+        recipient_user_id=recipient_user_id,
+    )
+
     item = _to_message_item(message, str(conversation.public_id), {})
     return SendChatMessageResponse(message=item)
 
@@ -470,6 +480,15 @@ def mark_chat_read(
     )
 
     db.commit()
+
+    recipient_user_id = conversation.user_b_id if conversation.user_a_id == user.id else conversation.user_a_id
+    emit_chat_read_event(
+        db=db,
+        conversation=conversation,
+        reader_user_id=user.id,
+        recipient_user_id=recipient_user_id,
+        last_read_message_id=str(message.public_id),
+    )
 
     return MarkChatReadResponse(
         conversation_id=str(conversation.public_id),

@@ -2,7 +2,7 @@ from pathlib import Path
 import os
 
 import firebase_admin
-from firebase_admin import credentials, auth
+from firebase_admin import auth, credentials, messaging
 
 
 DEFAULT_FIREBASE_CREDENTIALS_FILE = "syncfound-fe04d-firebase-adminsdk-fbsvc-e58f0d76f8.json"
@@ -29,3 +29,16 @@ def initialize_firebase() -> None:
 
 def verify_firebase_id_token(firebase_token: str) -> dict:
     return auth.verify_id_token(firebase_token)
+
+
+def send_fcm_multicast(tokens: list[str], data: dict[str, str], title: str | None = None, body: str | None = None) -> dict[str, int]:
+    if not tokens:
+        return {"success_count": 0, "failure_count": 0}
+
+    notification = None
+    if title or body:
+        notification = messaging.Notification(title=title, body=body)
+
+    message = messaging.MulticastMessage(tokens=tokens, data=data, notification=notification)
+    response = messaging.send_each_for_multicast(message)
+    return {"success_count": response.success_count, "failure_count": response.failure_count}
