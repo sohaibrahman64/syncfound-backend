@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 class FirebaseLoginRequest(BaseModel):
     phone_number: str = Field(min_length=10)
     firebaseToken: str = Field(min_length=10)
+    country_id: int | None = Field(default=None, gt=0)
 
 
 class FirebaseUserResponse(BaseModel):
