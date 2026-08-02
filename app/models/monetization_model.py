@@ -46,7 +46,7 @@ class UserSubscription(Base):
     __tablename__ = "user_subscriptions"
     __table_args__ = (
         UniqueConstraint("provider", "provider_subscription_id", name="uq_user_subscriptions_provider_subscription"),
-        CheckConstraint("provider IN ('stripe', 'razorpay', 'xpay')", name="chk_user_subscriptions_provider"),
+        CheckConstraint("provider IN ('stripe', 'razorpay', 'xpay', 'payu')", name="chk_user_subscriptions_provider"),
         CheckConstraint(
             "status IN ('incomplete', 'trialing', 'active', 'grace', 'past_due', 'canceled', 'expired')",
             name="chk_user_subscriptions_status",
@@ -79,7 +79,7 @@ class BillingWebhookEvent(Base):
     __tablename__ = "billing_webhook_events"
     __table_args__ = (
         UniqueConstraint("provider", "provider_event_id", name="uq_billing_webhook_events_provider_event"),
-        CheckConstraint("provider IN ('stripe', 'razorpay', 'xpay')", name="chk_billing_webhook_events_provider"),
+        CheckConstraint("provider IN ('stripe', 'razorpay', 'xpay', 'payu')", name="chk_billing_webhook_events_provider"),
         CheckConstraint(
             "processing_status IN ('received', 'processed', 'failed')",
             name="chk_billing_webhook_events_status",

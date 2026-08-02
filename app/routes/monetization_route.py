@@ -1,11 +1,19 @@
 from datetime import datetime, timezone
+import hashlib
+import os
+from decimal import Decimal
+from urllib.parse import urlencode
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, status
+from fastapi.responses import RedirectResponse
 from firebase_admin import exceptions as firebase_exceptions
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.city_model import City
+from app.models.country_new_model import CountryNew
 from app.models.monetization_model import (
     BillingWebhookEvent,
     CuratedEvent,
@@ -16,13 +24,17 @@ from app.models.monetization_model import (
     UserSubscription,
 )
 from app.models.user_model import User
+from app.models.user_profile_model import UserProfile
 from app.schemas.monetization_schema import (
+    BillingCheckoutSessionRequest,
+    BillingCheckoutSessionResponse,
     BillingSubscriptionEventRequest,
     BillingWebhookResponse,
     CuratedEventRegistrationResponse,
     CuratedEventResponse,
     InvestorIntroRequestCreate,
     InvestorIntroRequestResponse,
+    PaywallPricingResponse,
     PricingPlanResponse,
     UserEntitlementResponse,
     UserSubscriptionResponse,
@@ -30,6 +42,192 @@ from app.schemas.monetization_schema import (
 from app.services.firebase_service import verify_firebase_id_token
 
 router = APIRouter(prefix="/api/v1", tags=["Monetization"])
+
+INDIA_ISO2 = "IN"
+PAYU_PROVIDER = "payu"
+
+
+def _split_first_name(full_name: str | None) -> str:
+    normalized = (full_name or "").strip()
+    if normalized:
+        return normalized.split()[0]
+    return "User"
+
+
+def _format_payu_amount(amount_minor: int) -> str:
+    return format(Decimal(amount_minor) / Decimal("100"), ".2f")
+
+
+def _build_payu_hash(
+    merchant_key: str,
+    merchant_salt: str,
+    txnid: str,
+    amount: str,
+    productinfo: str,
+    firstname: str,
+    email: str,
+) -> str:
+    hash_sequence = [
+        merchant_key,
+        txnid,
+        amount,
+        productinfo,
+        firstname,
+        email,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        merchant_salt,
+    ]
+    hash_string = "|".join(hash_sequence)
+    return hashlib.sha512(hash_string.encode("utf-8")).hexdigest()
+
+
+def _build_payu_provider_payload(
+    checkout_session_id: str,
+    plan: PricingPlan,
+    email: str,
+    mobile: str,
+    full_name: str | None,
+) -> tuple[str, dict[str, str]]:
+    merchant_key = os.getenv("PAYU_MERCHANT_KEY", "").strip()
+    merchant_salt = os.getenv("PAYU_MERCHANT_SALT", "").strip()
+    success_url = os.getenv("PAYU_SUCCESS_URL", "").strip()
+    failure_url = os.getenv("PAYU_FAILURE_URL", "").strip()
+    action_url = os.getenv("PAYU_HOSTED_CHECKOUT_BASE_URL", "https://secure.payu.in/_payment").strip()
+
+    if not merchant_key or not merchant_salt or not success_url or not failure_url or not action_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="PayU checkout configuration is incomplete.",
+        )
+
+    txnid = checkout_session_id
+    amount = _format_payu_amount(plan.price_minor)
+    firstname = _split_first_name(full_name)
+    productinfo = plan.name
+    hash_value = _build_payu_hash(
+        merchant_key=merchant_key,
+        merchant_salt=merchant_salt,
+        txnid=txnid,
+        amount=amount,
+        productinfo=productinfo,
+        firstname=firstname,
+        email=email,
+    )
+
+    post_data_fields = {
+        "key": merchant_key,
+        "txnid": txnid,
+        "amount": amount,
+        "firstname": firstname,
+        "productinfo": productinfo,
+        "email": email,
+        "phone": mobile,
+        "surl": success_url,
+        "furl": failure_url,
+        "hash": hash_value,
+    }
+    post_data = urlencode(post_data_fields)
+
+    return action_url, {
+        "flow": "webview_post",
+        "method": "POST",
+        "action_url": action_url,
+        "post_data": post_data,
+        "txnid": txnid,
+        "surl": success_url,
+        "furl": failure_url,
+    }
+
+
+def _get_frontend_callback_url_or_500(kind: str) -> str:
+    import pdb; pdb.set_trace()
+    env_key = f"PAYU_FRONTEND_{kind.upper()}_URL"
+    callback_url = os.getenv(env_key, "").strip()
+    if not callback_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Missing {env_key} configuration for PayU callback redirection.",
+        )
+    return callback_url
+
+
+def _merge_callback_fields(request: Request, payload: dict[str, str], fallback_status: str) -> dict[str, str]:
+    status_value = (payload.get("status") or fallback_status).strip().lower()
+    txnid = (payload.get("txnid") or "").strip()
+    error_code = (payload.get("error_code") or payload.get("error") or "").strip()
+    error_message = (
+        payload.get("error_message")
+        or payload.get("error_Message")
+        or payload.get("field9")
+        or ""
+    ).strip()
+
+    merged: dict[str, str] = {
+        "status": status_value,
+    }
+    if txnid:
+        merged["checkout_session_id"] = txnid
+        merged["txnid"] = txnid
+    if error_code:
+        merged["error_code"] = error_code
+    if error_message:
+        merged["error_message"] = error_message
+
+    # Preserve upstream fields for troubleshooting on frontend callback page.
+    for key in ("mihpayid", "mode", "amount", "productinfo", "email", "phone"):
+        value = (payload.get(key) or "").strip()
+        if value:
+            merged[key] = value
+
+    # Preserve existing query params from initial callback URL (if any).
+    for key, value in request.query_params.items():
+        if key not in merged and value:
+            merged[key] = value
+
+    return merged
+
+
+def _redirect_to_frontend_callback(base_url: str, params: dict[str, str]) -> RedirectResponse:
+    separator = "&" if "?" in base_url else "?"
+    return RedirectResponse(url=f"{base_url}{separator}{urlencode(params)}", status_code=status.HTTP_302_FOUND)
+
+
+@router.api_route("/billing/payu/success", methods=["GET", "POST"])
+async def payu_success_callback(request: Request):
+    payload: dict[str, str]
+    if request.method == "POST":
+        form = await request.form()
+        payload = {key: str(value) for key, value in form.items()}
+    else:
+        payload = {key: value for key, value in request.query_params.items()}
+
+    import pdb;pdb.set_trace()
+    frontend_url = _get_frontend_callback_url_or_500(kind="success")
+    merged = _merge_callback_fields(request=request, payload=payload, fallback_status="success")
+    return _redirect_to_frontend_callback(base_url=frontend_url, params=merged)
+
+
+@router.api_route("/billing/payu/failure", methods=["GET", "POST"])
+async def payu_failure_callback(request: Request):
+    payload: dict[str, str]
+    if request.method == "POST":
+        form = await request.form()
+        payload = {key: str(value) for key, value in form.items()}
+    else:
+        payload = {key: value for key, value in request.query_params.items()}
+
+    frontend_url = _get_frontend_callback_url_or_500(kind="failure")
+    merged = _merge_callback_fields(request=request, payload=payload, fallback_status="failed")
+    return _redirect_to_frontend_callback(base_url=frontend_url, params=merged)
 
 
 def _get_authenticated_user(authorization: str, db: Session) -> User:
@@ -125,6 +323,27 @@ def _sync_entitlement_from_subscription(db: Session, user_id: int, subscription:
     return entitlement
 
 
+def _get_india_country_or_404(db: Session) -> CountryNew:
+    india_country = db.query(CountryNew).filter(CountryNew.iso2 == INDIA_ISO2).first()
+    if india_country is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="India country record not found.")
+    return india_country
+
+
+def _get_user_country_id(db: Session, user_id: int) -> int | None:
+    return (
+        db.query(City.country_id)
+        .join(UserProfile, UserProfile.city_id == City.id)
+        .filter(UserProfile.user_id == user_id)
+        .scalar()
+    )
+
+
+def _resolve_provider(user_country_id: int | None, india_country_id: int) -> str:
+    # XPay is paused; route all checkouts to PayU for now.
+    return PAYU_PROVIDER
+
+
 @router.get("/pricing/plans", response_model=list[PricingPlanResponse])
 def get_pricing_plans(db: Session = Depends(get_db)):
     return (
@@ -132,6 +351,116 @@ def get_pricing_plans(db: Session = Depends(get_db)):
         .filter(PricingPlan.is_active.is_(True))
         .order_by(PricingPlan.price_minor.asc(), PricingPlan.id.asc())
         .all()
+    )
+
+
+@router.get("/users/me/paywall/pricing", response_model=PaywallPricingResponse)
+def get_paywall_pricing(
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = _get_authenticated_user(authorization=authorization, db=db)
+
+    india_country = _get_india_country_or_404(db=db)
+    user_country_id = _get_user_country_id(db=db, user_id=user.id)
+
+    is_indian_user = user_country_id == india_country.id
+    currency_code = "INR" if is_indian_user else "USD"
+
+    plans = (
+        db.query(PricingPlan)
+        .filter(
+            PricingPlan.is_active.is_(True),
+            PricingPlan.currency_code == currency_code,
+        )
+        .order_by(PricingPlan.price_minor.asc(), PricingPlan.id.asc())
+        .all()
+    )
+
+    return PaywallPricingResponse(
+        user_id=user.id,
+        user_country_id=user_country_id,
+        india_country_id=india_country.id,
+        is_indian_user=is_indian_user,
+        currency_code=currency_code,
+        plans=plans,
+    )
+
+
+@router.post("/users/me/billing/checkout-session", response_model=BillingCheckoutSessionResponse)
+def create_billing_checkout_session(
+    payload: BillingCheckoutSessionRequest,
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = _get_authenticated_user(authorization=authorization, db=db)
+    india_country = _get_india_country_or_404(db=db)
+    user_country_id = _get_user_country_id(db=db, user_id=user.id)
+
+    is_indian_user = user_country_id == india_country.id
+    provider = _resolve_provider(user_country_id=user_country_id, india_country_id=india_country.id)
+
+    plan = (
+        db.query(PricingPlan)
+        .filter(
+            PricingPlan.code == payload.plan_code,
+            PricingPlan.is_active.is_(True),
+        )
+        .first()
+    )
+    if plan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active plan not found.")
+
+    if plan.tier != "premium":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Checkout is available for premium plans only.")
+
+    if plan.currency_code not in {"INR", "USD"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid plan currency for checkout. Supported currencies are INR and USD.",
+        )
+
+    checkout_email = (user.email or payload.email or "").strip()
+    checkout_mobile = (user.mobile or payload.mobile or "").strip()
+    missing_fields: list[str] = []
+    if not checkout_email:
+        missing_fields.append("email")
+    if not checkout_mobile:
+        missing_fields.append("mobile")
+    if missing_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "PayU checkout requires contact details. "
+                f"Missing: {', '.join(missing_fields)}. "
+                "Provide these fields in the checkout request or update user profile data."
+            ),
+        )
+
+    checkout_session_id = f"chk_{uuid4().hex[:16]}"
+    checkout_url, provider_payload = _build_payu_provider_payload(
+        checkout_session_id=checkout_session_id,
+        plan=plan,
+        email=checkout_email,
+        mobile=checkout_mobile,
+        full_name=user.full_name,
+    )
+
+    return BillingCheckoutSessionResponse(
+        user_id=user.id,
+        user_country_id=user_country_id,
+        india_country_id=india_country.id,
+        is_indian_user=is_indian_user,
+        provider=provider,
+        plan_id=plan.id,
+        plan_code=plan.code,
+        currency_code=plan.currency_code,
+        amount_minor=plan.price_minor,
+        checkout_session_id=checkout_session_id,
+        checkout_status="created",
+        checkout_url=checkout_url,
+        provider_payload=provider_payload,
+        message="Checkout session initialized with PayU. Proceed with provider order creation.",
     )
 
 
@@ -164,12 +493,12 @@ def get_my_subscriptions(
 @router.post("/billing/webhooks/{provider}", response_model=BillingWebhookResponse)
 def ingest_billing_webhook(
     payload: BillingSubscriptionEventRequest,
-    provider: str = Path(..., pattern="^(stripe|razorpay|xpay)$"),
+    provider: str = Path(..., pattern="^(stripe|razorpay|payu)$"),
     db: Session = Depends(get_db),
 ):
     duplicate_event = False
 
-    if provider not in {"stripe", "razorpay", "xpay"}:
+    if provider not in {"stripe", "razorpay", "payu"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider.")
 
     existing_event = (

@@ -63,7 +63,7 @@ def firebase_login(payload: FirebaseLoginRequest, db: Session = Depends(get_db))
             detail="Token does not contain a valid uid.",
         )
 
-    mobile = decoded_token.get("phone_number")
+    mobile = decoded_token.get("phone_number") or payload.phone_number
     email = decoded_token.get("email")
     full_name = decoded_token.get("name")
     photo_url = decoded_token.get("picture")
@@ -87,10 +87,15 @@ def firebase_login(payload: FirebaseLoginRequest, db: Session = Depends(get_db))
         db.add(user)
         db.flush()
     else:
-        user.email = email
-        user.full_name = full_name
-        user.photo_url = photo_url
-        user.email_verified = email_verified
+        if mobile:
+            user.mobile = mobile
+        if email:
+            user.email = email
+        if full_name:
+            user.full_name = full_name
+        if photo_url:
+            user.photo_url = photo_url
+        user.email_verified = email_verified if email else user.email_verified
         user.last_login_at = now
 
     provider_uid = decoded_token.get("sub", firebase_uid)
@@ -148,6 +153,7 @@ def firebase_signin(payload: FirebaseLoginRequest, db: Session = Depends(get_db)
             detail="User not found.",
         )
 
+    mobile = decoded_token.get("phone_number") or payload.phone_number
     email = decoded_token.get("email")
     full_name = decoded_token.get("name")
     photo_url = decoded_token.get("picture")
@@ -156,10 +162,15 @@ def firebase_signin(payload: FirebaseLoginRequest, db: Session = Depends(get_db)
 
     now = datetime.now(timezone.utc)
 
-    user.email = email
-    user.full_name = full_name
-    user.photo_url = photo_url
-    user.email_verified = email_verified
+    if mobile:
+        user.mobile = mobile
+    if email:
+        user.email = email
+    if full_name:
+        user.full_name = full_name
+    if photo_url:
+        user.photo_url = photo_url
+    user.email_verified = email_verified if email else user.email_verified
     user.last_login_at = now
 
     provider_uid = decoded_token.get("sub", firebase_uid)

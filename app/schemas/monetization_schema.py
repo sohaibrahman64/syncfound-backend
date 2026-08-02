@@ -116,3 +116,35 @@ class CuratedEventRegistrationResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PaywallPricingResponse(BaseModel):
+    user_id: int
+    user_country_id: int | None = None
+    india_country_id: int
+    is_indian_user: bool
+    currency_code: str
+    plans: list[PricingPlanResponse]
+
+
+class BillingCheckoutSessionRequest(BaseModel):
+    plan_code: str = Field(min_length=1)
+    email: str | None = None
+    mobile: str | None = None
+
+
+class BillingCheckoutSessionResponse(BaseModel):
+    user_id: int
+    user_country_id: int | None = None
+    india_country_id: int
+    is_indian_user: bool
+    provider: str
+    plan_id: int
+    plan_code: str
+    currency_code: str
+    amount_minor: int
+    checkout_session_id: str
+    checkout_status: str
+    checkout_url: str
+    provider_payload: dict | None = None
+    message: str
