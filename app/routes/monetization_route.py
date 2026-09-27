@@ -1,13 +1,16 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import os
 from decimal import Decimal
+import re
 from urllib.parse import urlencode
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, status
 from fastapi.responses import RedirectResponse
 from firebase_admin import exceptions as firebase_exceptions
+import requests
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -149,7 +152,6 @@ def _build_payu_provider_payload(
 
 
 def _get_frontend_callback_url_or_500(kind: str) -> str:
-    import pdb; pdb.set_trace()
     env_key = f"PAYU_FRONTEND_{kind.upper()}_URL"
     callback_url = os.getenv(env_key, "").strip()
     if not callback_url:
@@ -201,8 +203,236 @@ def _redirect_to_frontend_callback(base_url: str, params: dict[str, str]) -> Red
     return RedirectResponse(url=f"{base_url}{separator}{urlencode(params)}", status_code=status.HTTP_302_FOUND)
 
 
+def _payu_reverse_hash(payload: dict[str, str], merchant_salt: str) -> str:
+    additional_charges = payload.get("additionalCharges") or payload.get("additional_charges") or ""
+    merchant_key = (payload.get("key") or os.getenv("PAYU_MERCHANT_KEY", "")).strip()
+    values = [
+        payload.get("status", ""),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        payload.get("email", ""),
+        payload.get("firstname", ""),
+        payload.get("productinfo", ""),
+        payload.get("amount", ""),
+        payload.get("txnid", ""),
+        merchant_key,
+    ]
+    hash_string = "|".join([merchant_salt, *values])
+    if additional_charges:
+        hash_string = "|".join([additional_charges, hash_string])
+    return hashlib.sha512(hash_string.encode("utf-8")).hexdigest()
+
+def _payu_reverse_hash_new(payload: dict[str, str], merchant_salt: str) -> str:
+    additional_charges = (
+        payload.get("additionalCharges")
+        or payload.get("additional_charges")
+        or ""
+    )
+
+    merchant_key = (
+        payload.get("key")
+        or os.getenv("PAYU_MERCHANT_KEY", "")
+    ).strip()
+
+    values = [
+        payload.get("status", ""),
+        "",
+        "",
+        "",
+        "",
+        "",
+        payload.get("udf5"),
+        payload.get("udf4", ""),
+        payload.get("udf3", ""),
+        payload.get("udf2", ""),
+        payload.get("udf1", ""),
+        payload.get("email", ""),
+        payload.get("firstname", ""),
+        payload.get("productinfo", ""),
+        payload.get("amount", ""),
+        payload.get("txnid", ""),
+        merchant_key,
+    ]
+    hash_string = "|".join([merchant_salt, *values])
+
+    if additional_charges:
+        hash_string = "|".join([additional_charges, hash_string])
+
+    # print("PAYU REVERSE HASH STRING:")
+    # print(hash_string.replace(merchant_salt, "<SALT>"))
+
+    calculated_hash = hashlib.sha512(
+        hash_string.encode("utf-8")
+    ).hexdigest()
+
+    # print("PAYU POSTED HASH:", payload.get("hash"))
+    # print("PAYU CALCULATED HASH:", calculated_hash)
+
+    return calculated_hash
+
+
+def _validate_payu_response_hash(payload: dict[str, str]) -> bool:
+    posted_hash = (payload.get("hash") or "").strip().lower()
+    merchant_salt = os.getenv("PAYU_MERCHANT_SALT", "").strip()
+    if not posted_hash or not merchant_salt:
+        return False
+    calculated_hash = _payu_reverse_hash_new(payload, merchant_salt)
+    return hmac.compare_digest(posted_hash, calculated_hash)
+
+
+def _verify_payu_transaction(payload: dict[str, str]) -> bool:
+    verify_url = os.getenv("PAYU_VERIFY_URL", "").strip()
+    if not verify_url:
+        action_url = os.getenv("PAYU_HOSTED_CHECKOUT_BASE_URL", "https://secure.payu.in/_payment")
+        verify_url = "https://test.payu.in/merchant/postservice.php?form=2" if "test." in action_url else "https://info.payu.in/merchant/postservice.php?form=2"
+
+    merchant_key = os.getenv("PAYU_MERCHANT_KEY", "").strip()
+    merchant_salt = os.getenv("PAYU_MERCHANT_SALT", "").strip()
+    txnid = payload.get("txnid", "")
+    verify_hash = hashlib.sha512(
+        f"{merchant_key}|verify_payment|{txnid}|{merchant_salt}".encode("utf-8")
+    ).hexdigest()
+
+    try:
+        response = requests.post(
+            verify_url,
+            data={
+                "key": merchant_key,
+                "command": "verify_payment",
+                "var1": txnid,
+                "hash": verify_hash,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        result = response.json()
+    except (requests.RequestException, ValueError):
+        return False
+
+    transaction_details = result.get("transaction_details", {}) if isinstance(result, dict) else {}
+    transaction = transaction_details.get(txnid, {}) if isinstance(transaction_details, dict) else {}
+    return bool(
+        isinstance(result, dict)
+        and str(result.get("status")) == "1"
+        and str(transaction.get("status", "")).lower() == "success"
+    )
+
+
+def _record_payu_event(db: Session, event_id: str, event_type: str, payload: dict[str, str]) -> None:
+    existing = (
+        db.query(BillingWebhookEvent)
+        .filter(
+            BillingWebhookEvent.provider == PAYU_PROVIDER,
+            BillingWebhookEvent.provider_event_id == event_id,
+        )
+        .first()
+    )
+    if existing is None:
+        db.add(
+            BillingWebhookEvent(
+                provider=PAYU_PROVIDER,
+                provider_event_id=event_id,
+                event_type=event_type,
+                payload=payload,
+                processing_status="processed",
+                processed_at=datetime.now(timezone.utc),
+            )
+        )
+
+def _normalize_product_info(value: str) -> str:
+    value = (value or "").strip().lower()
+
+    # Remove parentheses
+    value = re.sub(r"[()]", "", value)
+
+    # Collapse multiple whitespace characters
+    value = re.sub(r"\s+", " ", value)
+
+    return value
+
+
+def _activate_payu_subscription(db: Session, payload: dict[str, str]) -> None:
+    email = (payload.get("email") or "").strip().lower()
+    txnid = (payload.get("txnid") or "").strip()
+    productinfo = (payload.get("productinfo") or "").strip()
+    normalized_productinfo = _normalize_product_info(productinfo)
+    amount_minor = int((Decimal(payload.get("amount", "0")) * 100).quantize(Decimal("1")))
+
+    user = db.query(User).filter(User.email == email).first() if email else None
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PayU response user could not be matched.")
+
+    # plan = (
+    #     db.query(PricingPlan)
+    #     .filter(
+    #         PricingPlan.is_active.is_(True),
+    #         PricingPlan.tier == "premium",
+    #         PricingPlan.price_minor == amount_minor,
+    #         PricingPlan.name == productinfo,
+    #     )
+    #     .first()
+    # )
+
+    plan = (
+    db.query(PricingPlan)
+        .filter(
+            PricingPlan.is_active.is_(True),
+            PricingPlan.tier == "premium",
+            PricingPlan.price_minor == amount_minor,
+        )
+        .all()
+    )
+
+    plan = next(
+        (
+            p for p in plan
+            if _normalize_product_info(p.name) == normalized_productinfo
+        ),
+        None,
+    )
+
+    if plan is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PayU response plan could not be matched.")
+
+    subscription = (
+        db.query(UserSubscription)
+        .filter(
+            UserSubscription.provider == PAYU_PROVIDER,
+            UserSubscription.provider_subscription_id == txnid,
+        )
+        .first()
+    )
+    if subscription is None:
+        period_start = datetime.now(timezone.utc)
+        subscription = UserSubscription(
+            user_id=user.id,
+            plan_id=plan.id,
+            provider=PAYU_PROVIDER,
+            provider_customer_id=None,
+            provider_subscription_id=txnid,
+            status="active",
+            current_period_start=period_start,
+            current_period_end=period_start + timedelta(days=30 * plan.billing_interval_months),
+            subscription_metadata={"payu_transaction": payload},
+        )
+        db.add(subscription)
+        db.flush()
+    else:
+        subscription.status = "active"
+        subscription.subscription_metadata = {"payu_transaction": payload}
+
+    _sync_entitlement_from_subscription(db=db, user_id=user.id, subscription=subscription, plan=plan)
+
+
 @router.api_route("/billing/payu/success", methods=["GET", "POST"])
-async def payu_success_callback(request: Request):
+async def payu_success_callback(request: Request, db: Session = Depends(get_db)):
     payload: dict[str, str]
     if request.method == "POST":
         form = await request.form()
@@ -210,14 +440,34 @@ async def payu_success_callback(request: Request):
     else:
         payload = {key: value for key, value in request.query_params.items()}
 
-    import pdb;pdb.set_trace()
     frontend_url = _get_frontend_callback_url_or_500(kind="success")
     merged = _merge_callback_fields(request=request, payload=payload, fallback_status="success")
+    event_id = f"payu-success:{payload.get('txnid', '')}"
+    try:
+        if not _validate_payu_response_hash(payload):
+            _record_payu_event(db=db, event_id=event_id, event_type="payu.payment.invalid_hash", payload=payload)
+            db.commit()
+            merged.update({"status": "failed", "error_code": "invalid_hash", "error_message": "Payment response validation failed."})
+            return _redirect_to_frontend_callback(base_url=frontend_url, params=merged)
+        if not _verify_payu_transaction(payload):
+            _record_payu_event(db=db, event_id=event_id, event_type="payu.payment.verification_failed", payload=payload)
+            db.commit()
+            merged.update({"status": "pending", "error_code": "verification_failed", "error_message": "Payment is awaiting verification."})
+            return _redirect_to_frontend_callback(base_url=frontend_url, params=merged)
+        _activate_payu_subscription(db=db, payload=payload)
+        _record_payu_event(db=db, event_id=event_id, event_type="payu.payment.success", payload=payload)
+        db.commit()
+    except HTTPException as exc:
+        db.rollback()
+        merged.update({"status": "failed", "error_code": "payment_processing_failed", "error_message": exc.detail})
+    except Exception:
+        db.rollback()
+        merged.update({"status": "failed", "error_code": "payment_processing_failed", "error_message": "Payment processing failed."})
     return _redirect_to_frontend_callback(base_url=frontend_url, params=merged)
 
 
 @router.api_route("/billing/payu/failure", methods=["GET", "POST"])
-async def payu_failure_callback(request: Request):
+async def payu_failure_callback(request: Request, db: Session = Depends(get_db)):
     payload: dict[str, str]
     if request.method == "POST":
         form = await request.form()
@@ -227,8 +477,62 @@ async def payu_failure_callback(request: Request):
 
     frontend_url = _get_frontend_callback_url_or_500(kind="failure")
     merged = _merge_callback_fields(request=request, payload=payload, fallback_status="failed")
+    event_id = f"payu-failure:{payload.get('txnid') or uuid4().hex}"
+    _record_payu_event(db=db, event_id=event_id, event_type="payu.payment.failed", payload=payload)
+    db.commit()
     return _redirect_to_frontend_callback(base_url=frontend_url, params=merged)
 
+@router.get("/billing/payu/status")
+def get_payu_payment_status(
+    checkout_session_id: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+):
+    success_event = (
+        db.query(BillingWebhookEvent)
+        .filter(
+            BillingWebhookEvent.provider == PAYU_PROVIDER,
+            BillingWebhookEvent.provider_event_id == f"payu-success:{checkout_session_id}",
+        )
+        .first()
+    )
+    failure_event = (
+        db.query(BillingWebhookEvent)
+        .filter(
+            BillingWebhookEvent.provider == PAYU_PROVIDER,
+            BillingWebhookEvent.provider_event_id == f"payu-failure:{checkout_session_id}",
+        )
+        .first()
+    )
+    event = success_event or failure_event
+    if event is None:
+        return {
+            "checkout_session_id": checkout_session_id,
+            "status": "pending",
+            "tier": "free",
+            "message": "Payment callback has not been received yet.",
+        }
+
+    payload = event.payload or {}
+    email = (payload.get("email") or "").strip().lower()
+    user = db.query(User).filter(User.email == email).first() if email else None
+    entitlement = db.query(UserEntitlement).filter(UserEntitlement.user_id == user.id).first() if user else None
+
+    if event.event_type == "payu.payment.success" and entitlement and entitlement.tier == "premium":
+        final_status = "success"
+    elif event.event_type == "payu.payment.verification_failed":
+        final_status = "pending"
+    else:
+        final_status = "failed"
+
+    return {
+        "checkout_session_id": checkout_session_id,
+        "status": final_status,
+        "tier": entitlement.tier if entitlement else "free",
+        "error_code": payload.get("error_code"),
+        "error_message": payload.get("error_message"),
+        "txnid": payload.get("txnid"),
+        "mihpayid": payload.get("mihpayid"),
+    }
 
 def _get_authenticated_user(authorization: str, db: Session) -> User:
     token_prefix = "Bearer "

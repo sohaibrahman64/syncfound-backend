@@ -2,7 +2,11 @@
 .vscode
 .venv
 *firebase-adminsdk*.json
-__pycache__/
+__pycache__/*.*
 uploads
-app/__pycache__/
-app/*/__pycache__/
+app/__pycache__/*.pyc
+app/*/__pycache__/*.pyc
+*/__pycache__/*.pyc
+*/*/*.pyc
+*.pyc
+app/__pycache__/main.cpython-314.pyc

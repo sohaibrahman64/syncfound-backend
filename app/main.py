@@ -56,6 +56,7 @@ import app.models.user_device_token_model  # noqa: F401
 import app.models.notification_outbox_model  # noqa: F401
 import app.models.chat_model  # noqa: F401
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +67,20 @@ if is_local_storage_enabled():
     local_upload_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=str(local_upload_dir)), name="uploads")
 
-origins = [
-    "*",
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*",
+        "ngrok-skip-browser-warning",
+    ],
 )
 
 app.include_router(country_router)
