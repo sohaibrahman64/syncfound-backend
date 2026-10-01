@@ -8,10 +8,31 @@ class ChatUserSummary(BaseModel):
     user_id: int
     full_name: str | None = None
     display_name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    age: int | None = None
+    title: str | None = None
     profile_picture_url: str | None = None
     profile_photo_url: str | None = None
-    title: str | None = None
+    country_code: str | None = None
+    city: str | None = None
     location_text: str | None = None
+    user_role: str | None = None
+    role: str | None = None
+    intent_badge: str | None = None
+    bio: str | None = None
+    experience_summary: str | None = None
+    startup_idea: str | None = None
+    linkedin_url: str | None = None
+    user_skills: list[str] = Field(default_factory=list)
+    cofounder_skills: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+    linkedin_headline: str | None = None
+    linkedin_current_company: str | None = None
+    linkedin_location: str | None = None
+    linkedin_top_education_school_name: str | None = None
+    linkedin_experiences: list = Field(default_factory=list)  # We'll type later if needed
+    education_details: list = Field(default_factory=list)
     joined_at: datetime | None = None
 
 

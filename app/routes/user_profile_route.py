@@ -13,7 +13,12 @@ from app.models.user_profile_model import (
     UserProfileLocationPreference,
     UserProfileUserSkill,
 )
-from app.schemas.user_profile_schema import UserProfileUpsertRequest, UserProfileUpsertResponse
+from app.schemas.user_profile_schema import (
+    LinkedInProfilePreview,
+    UserProfileResponse,
+    UserProfileUpsertRequest,
+    UserProfileUpsertResponse,
+)
 from app.services.firebase_service import verify_firebase_id_token
 
 
@@ -58,6 +63,130 @@ def _get_authenticated_user(authorization: str, db: Session) -> User:
         )
 
     return user
+
+
+@router.get("/users/me/profile", response_model=UserProfileResponse)
+def get_my_profile(
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = _get_authenticated_user(authorization=authorization, db=db)
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found.",
+        )
+
+    location_preferences = (
+        db.query(UserProfileLocationPreference)
+        .filter(UserProfileLocationPreference.user_profile_id == profile.id)
+        .order_by(UserProfileLocationPreference.question_id)
+        .all()
+    )
+    user_skills = (
+        db.query(UserProfileUserSkill)
+        .filter(UserProfileUserSkill.user_profile_id == profile.id)
+        .order_by(UserProfileUserSkill.skill_id)
+        .all()
+    )
+    cofounder_skills = (
+        db.query(UserProfileCofounderSkill)
+        .filter(UserProfileCofounderSkill.user_profile_id == profile.id)
+        .order_by(UserProfileCofounderSkill.skill_id)
+        .all()
+    )
+    industries = (
+        db.query(UserProfileIndustry)
+        .filter(UserProfileIndustry.user_profile_id == profile.id)
+        .order_by(UserProfileIndustry.industry_id)
+        .all()
+    )
+
+    preview_fields = (
+        profile.linkedin_profile_preview_headline,
+        profile.linkedin_profile_preview_first_organization,
+        profile.linkedin_profile_preview_first_education_institution,
+        profile.linkedin_profile_preview_first_location,
+        profile.linkedin_profile_preview_connections,
+    )
+    crop_fields = (
+        profile.profile_image_crop_x,
+        profile.profile_image_crop_y,
+        profile.profile_image_crop_width,
+        profile.profile_image_crop_height,
+    )
+
+    return UserProfileResponse(
+        userId=user.id,
+        profileId=profile.id,
+        firstName=profile.first_name,
+        lastName=profile.last_name,
+        dateOfBirth=profile.date_of_birth,
+        age=profile.age,
+        state=profile.state_id,
+        city=profile.city_id,
+        locationPreference=[
+            {
+                "question_id": preference.question_id,
+                "selected_answer_id": preference.selected_answer_id,
+            }
+            for preference in location_preferences
+        ],
+        matchingPurpose=profile.matching_purpose_id,
+        userRole=profile.user_role_id,
+        cofounderRole=profile.cofounder_role_id,
+        userSkills=[skill.skill_id for skill in user_skills],
+        cofounderSkills=[skill.skill_id for skill in cofounder_skills],
+        industries=[industry.industry_id for industry in industries],
+        title=profile.title,
+        primaryRole=profile.primary_role_id,
+        secondaryRole=profile.secondary_role_id,
+        bio=profile.bio,
+        startupIdea=profile.startup_idea,
+        fundingStage=profile.funding_stage_id,
+        timeCommitment=profile.time_commitment_id,
+        riskAppetite=profile.risk_appetite_id,
+        employmentType=profile.employment_type_id,
+        companyName=profile.company_name,
+        experienceLocation=profile.experience_location,
+        locationType=profile.location_type_id,
+        startDate=profile.start_date,
+        currentlyWorkHere=profile.currently_work_here,
+        endDate=profile.end_date,
+        linkedinUrl=profile.linkedin_url,
+        linkedinUsername=profile.linkedin_username,
+        linkedinProfilePreview=(
+            LinkedInProfilePreview(
+                headline=profile.linkedin_profile_preview_headline,
+                firstOrganization=profile.linkedin_profile_preview_first_organization,
+                firstEducationInstitution=profile.linkedin_profile_preview_first_education_institution,
+                firstLocation=profile.linkedin_profile_preview_first_location,
+                connections=profile.linkedin_profile_preview_connections,
+            )
+            if any(value is not None for value in preview_fields)
+            else None
+        ),
+        linkedinProfilePictureUrl=profile.linkedin_profile_picture_url,
+        pendingProfileImageUri=profile.pending_profile_image_uri,
+        pendingProfileImageSource=profile.pending_profile_image_source,
+        profileImageRotation=profile.profile_image_rotation,
+        profileImageScale=profile.profile_image_scale,
+        profileImageTranslateX=profile.profile_image_translate_x,
+        profileImageTranslateY=profile.profile_image_translate_y,
+        profileImageCropRect=(
+            {
+                "x": profile.profile_image_crop_x,
+                "y": profile.profile_image_crop_y,
+                "width": profile.profile_image_crop_width,
+                "height": profile.profile_image_crop_height,
+            }
+            if all(value is not None for value in crop_fields)
+            else None
+        ),
+        profileImageUri=profile.profile_image_uri,
+        profileImageSource=profile.profile_image_source,
+    )
 
 
 @router.patch("/users/me/profile", response_model=UserProfileUpsertResponse)

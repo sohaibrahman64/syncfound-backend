@@ -92,6 +92,11 @@ class UserProfileUpsertRequest(BaseModel):
     profileImageSource: str | None = None
 
 
+class UserProfileResponse(UserProfileUpsertRequest):
+    userId: int
+    profileId: int
+
+
 class UserProfileUpsertResponse(BaseModel):
     message: str
     user_id: int

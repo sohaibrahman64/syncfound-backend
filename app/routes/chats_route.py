@@ -33,6 +33,15 @@ from app.services.chat_event_service import emit_chat_message_created_event, emi
 from app.services.chat_service import create_conversation_message, upsert_conversation_read
 from app.services.firebase_service import verify_firebase_id_token
 
+from app.models.user_role_model import UserRole
+from app.models.cofounder_role_model import CofounderRole
+from app.models.matching_purpose_model import MatchingPurpose
+from app.models.user_profile_model import UserProfileUserSkill, UserProfileCofounderSkill, UserProfileIndustry
+from app.models.user_skill_model import UserSkill
+from app.models.cofounder_skill_model import CofounderSkill
+from app.models.industry_model import Industry
+from app.models.linkedin_profile_model import LinkedInProfile, LinkedInProfileExperience, LinkedInProfileEducation
+
 
 router = APIRouter(prefix="/api/v1", tags=["Chats"])
 
@@ -115,18 +124,182 @@ def _build_user_summary_map(user_ids: list[int], db: Session, joined_at_by_user:
             User.full_name.label("full_name"),
             UserProfile.first_name.label("first_name"),
             UserProfile.last_name.label("last_name"),
-            UserProfile.profile_image_uri.label("profile_photo_url"),
+            UserProfile.age.label("age"),
             UserProfile.title.label("title"),
-            UserProfile.experience_location.label("location_text"),
-            City.city_name.label("city"),
+            UserProfile.profile_image_uri.label("profile_photo_url"),
             CountryNew.iso2.label("country_code"),
+            City.city_name.label("city"),
+            UserProfile.experience_location.label("location_text"),
+            UserRole.role_name.label("user_role"),
+            CofounderRole.role_name.label("role"),
+            MatchingPurpose.matching_purpose.label("intent_badge"),
+            UserProfile.bio.label("bio"),
+            UserProfile.startup_idea.label("startup_idea"),
+            UserProfile.linkedin_url.label("linkedin_url"),
+            UserProfile.linkedin_profile_id.label("linkedin_profile_id"),
+            UserProfile.id.label("profile_id"),
         )
         .outerjoin(UserProfile, UserProfile.user_id == User.id)
         .outerjoin(City, City.id == UserProfile.city_id)
         .outerjoin(CountryNew, CountryNew.id == City.country_id)
+        .outerjoin(UserRole, UserRole.id == UserProfile.user_role_id)
+        .outerjoin(CofounderRole, CofounderRole.id == UserProfile.cofounder_role_id)
+        .outerjoin(MatchingPurpose, MatchingPurpose.id == UserProfile.matching_purpose_id)
         .filter(User.id.in_(user_ids))
         .all()
     )
+
+    profile_ids = [row.profile_id for row in rows if row.profile_id is not None]
+    user_skill_names_map: dict[int, list[str]] = {}
+    cofounder_skill_names_map: dict[int, list[str]] = {}
+    industry_names_map: dict[int, list[str]] = {}
+
+    if profile_ids:
+        user_skill_rows = (
+            db.query(UserProfileUserSkill.user_profile_id, UserSkill.skill_name)
+            .join(UserSkill, UserSkill.id == UserProfileUserSkill.skill_id)
+            .filter(UserProfileUserSkill.user_profile_id.in_(profile_ids))
+            .all()
+        )
+        for profile_id, skill_name in user_skill_rows:
+            user_skill_names_map.setdefault(profile_id, []).append(skill_name)
+
+        cofounder_skill_rows = (
+            db.query(UserProfileCofounderSkill.user_profile_id, CofounderSkill.skill_name)
+            .join(CofounderSkill, CofounderSkill.id == UserProfileCofounderSkill.skill_id)
+            .filter(UserProfileCofounderSkill.user_profile_id.in_(profile_ids))
+            .all()
+        )
+        for profile_id, skill_name in cofounder_skill_rows:
+            cofounder_skill_names_map.setdefault(profile_id, []).append(skill_name)
+
+        industry_rows = (
+            db.query(UserProfileIndustry.user_profile_id, Industry.industry_name)
+            .join(Industry, Industry.id == UserProfileIndustry.industry_id)
+            .filter(UserProfileIndustry.user_profile_id.in_(profile_ids))
+            .all()
+        )
+        for profile_id, industry_name in industry_rows:
+            industry_names_map.setdefault(profile_id, []).append(industry_name)
+
+    linkedin_profile_ids = [row.linkedin_profile_id for row in rows if row.linkedin_profile_id is not None]
+    linkedin_summary_map: dict[int, dict[str, str | None]] = {}
+    linkedin_experiences_map: dict[int, list] = {}
+    linkedin_education_map: dict[int, list] = {}
+
+    if linkedin_profile_ids:
+        linkedin_rows = (
+            db.query(
+                LinkedInProfile.id.label("linkedin_profile_id"),
+                LinkedInProfile.headline.label("headline"),
+                LinkedInProfile.current_company.label("current_company"),
+                LinkedInProfile.location_full.label("location_full"),
+                LinkedInProfile.location_city.label("location_city"),
+                LinkedInProfile.location_country_code.label("location_country_code"),
+                LinkedInProfile.top_education_school_name.label("top_education_school_name"),
+            )
+            .filter(LinkedInProfile.id.in_(linkedin_profile_ids))
+            .all()
+        )
+
+        profile_by_linkedin_id = {
+            row.linkedin_profile_id: row.profile_id
+            for row in rows
+            if row.linkedin_profile_id is not None
+        }
+
+        for row in linkedin_rows:
+            profile_id = profile_by_linkedin_id.get(row.linkedin_profile_id)
+            if profile_id is None:
+                continue
+            linkedin_summary_map[profile_id] = {
+                "headline": row.headline,
+                "current_company": row.current_company,
+                "location": row.location_full or row.location_city or row.location_country_code,
+                "top_education_school_name": row.top_education_school_name,
+            }
+
+        linkedin_experience_rows = (
+            db.query(
+                LinkedInProfileExperience.profile_id.label("profile_id"),
+                LinkedInProfileExperience.title.label("title"),
+                LinkedInProfileExperience.company.label("company"),
+                LinkedInProfileExperience.location.label("location"),
+                LinkedInProfileExperience.description.label("description"),
+                LinkedInProfileExperience.duration.label("duration"),
+                LinkedInProfileExperience.start_year.label("start_year"),
+                LinkedInProfileExperience.start_month.label("start_month"),
+                LinkedInProfileExperience.end_year.label("end_year"),
+                LinkedInProfileExperience.end_month.label("end_month"),
+                LinkedInProfileExperience.is_current.label("is_current"),
+                LinkedInProfileExperience.company_linkedin_url.label("company_linkedin_url"),
+                LinkedInProfileExperience.company_logo_url.label("company_logo_url"),
+                LinkedInProfileExperience.employment_type.label("employment_type"),
+                LinkedInProfileExperience.location_type.label("location_type"),
+            )
+            .filter(LinkedInProfileExperience.profile_id.in_(linkedin_profile_ids))
+            .order_by(LinkedInProfileExperience.is_current.desc(), LinkedInProfileExperience.id.asc())
+            .all()
+        )
+        for row in linkedin_experience_rows:
+            profile_id = profile_by_linkedin_id.get(row.profile_id)
+            if profile_id is None:
+                continue
+            linkedin_experiences_map.setdefault(profile_id, []).append(
+                {
+                    "title": row.title,
+                    "company": row.company,
+                    "location": row.location,
+                    "description": row.description,
+                    "duration": row.duration,
+                    "start_year": row.start_year,
+                    "start_month": row.start_month,
+                    "end_year": row.end_year,
+                    "end_month": row.end_month,
+                    "is_current": row.is_current,
+                    "company_linkedin_url": row.company_linkedin_url,
+                    "company_logo_url": row.company_logo_url,
+                    "employment_type": row.employment_type,
+                    "location_type": row.location_type,
+                }
+            )
+
+        linkedin_education_rows = (
+            db.query(
+                LinkedInProfileEducation.profile_id.label("profile_id"),
+                LinkedInProfileEducation.school.label("school"),
+                LinkedInProfileEducation.degree.label("degree"),
+                LinkedInProfileEducation.degree_name.label("degree_name"),
+                LinkedInProfileEducation.field_of_study.label("field_of_study"),
+                LinkedInProfileEducation.duration.label("duration"),
+                LinkedInProfileEducation.school_linkedin_url.label("school_linkedin_url"),
+                LinkedInProfileEducation.start_year.label("start_year"),
+                LinkedInProfileEducation.start_month.label("start_month"),
+                LinkedInProfileEducation.end_year.label("end_year"),
+                LinkedInProfileEducation.end_month.label("end_month"),
+            )
+            .filter(LinkedInProfileEducation.profile_id.in_(linkedin_profile_ids))
+            .order_by(LinkedInProfileEducation.id.asc())
+            .all()
+        )
+        for row in linkedin_education_rows:
+            profile_id = profile_by_linkedin_id.get(row.profile_id)
+            if profile_id is None:
+                continue
+            linkedin_education_map.setdefault(profile_id, []).append(
+                {
+                    "school": row.school,
+                    "degree": row.degree,
+                    "degree_name": row.degree_name,
+                    "field_of_study": row.field_of_study,
+                    "duration": row.duration,
+                    "school_linkedin_url": row.school_linkedin_url,
+                    "start_year": row.start_year,
+                    "start_month": row.start_month,
+                    "end_year": row.end_year,
+                    "end_month": row.end_month,
+                }
+            )
 
     result: dict[int, ChatUserSummary] = {}
     for row in rows:
@@ -135,20 +308,43 @@ def _build_user_summary_map(user_ids: list[int], db: Session, joined_at_by_user:
         if not location_text:
             location_parts = [part for part in [row.city, row.country_code] if part]
             location_text = ", ".join(location_parts) if location_parts else None
+        summary = linkedin_summary_map.get(row.profile_id, {}) if row.profile_id is not None else {}
 
         result[row.user_id] = ChatUserSummary(
             user_id=row.user_id,
             full_name=row.full_name,
             display_name=display_name,
+            first_name=row.first_name,
+            last_name=row.last_name,
+            age=row.age,
+            title=row.title,
             profile_picture_url=row.profile_photo_url,
             profile_photo_url=row.profile_photo_url,
-            title=row.title,
+            country_code=row.country_code,
+            city=row.city,
             location_text=location_text,
+            user_role=row.user_role,
+            role=row.role,
+            intent_badge=row.intent_badge,
+            bio=row.bio,
+            experience_summary=row.bio,
+            startup_idea=row.startup_idea,
+            linkedin_url=row.linkedin_url,
+            user_skills=user_skill_names_map.get(row.profile_id, []),
+            cofounder_skills=cofounder_skill_names_map.get(row.profile_id, []),
+            industries=industry_names_map.get(row.profile_id, []),
+            linkedin_headline=summary.get("headline"),
+            linkedin_current_company=summary.get("current_company"),
+            linkedin_location=summary.get("location"),
+            linkedin_top_education_school_name=summary.get("top_education_school_name"),
+            linkedin_experiences=linkedin_experiences_map.get(row.profile_id, []),
+            education_details=linkedin_education_map.get(row.profile_id, []),
             joined_at=joined_at_by_user.get(row.user_id),
         )
 
+    # Ensure all requested user_ids have an entry (fallback to minimal)
     for user_id in user_ids:
-        result.setdefault(user_id, ChatUserSummary(user_id=user_id, joined_at=joined_at_by_user.get(user_id)))
+        result.setdefault(user_id, ChatUserSummary(user_id=user_id))
 
     return result
 
