@@ -7,6 +7,16 @@ class LocationPreferenceSelection(BaseModel):
     question_id: int = Field(gt=0)
     selected_answer_id: int = Field(gt=0)
 
+class LocationPreferenceAnswerResponse(BaseModel):
+    id: int
+    answer: str
+
+
+class LocationPreferenceQuestionResponse(BaseModel):
+    question_id: int
+    question: str
+    answers: list[LocationPreferenceAnswerResponse]
+
 
 class LinkedInProfilePreview(BaseModel):
     headline: str | None = None
@@ -32,6 +42,7 @@ class UserProfileUpsertRequest(BaseModel):
     city: int = Field(gt=0)
 
     locationPreference: list[LocationPreferenceSelection] = Field(default_factory=list)
+    locationPreferenceQuestions: list[LocationPreferenceQuestionResponse] = Field(default_factory=list)
 
     matchingPurpose: int = Field(gt=0)
     userRole: int = Field(gt=0)
@@ -95,9 +106,32 @@ class UserProfileUpsertRequest(BaseModel):
 class UserProfileResponse(UserProfileUpsertRequest):
     userId: int
     profileId: int
+    locationDetails: LocationDetailsResponse | None = None
 
 
 class UserProfileUpsertResponse(BaseModel):
     message: str
     user_id: int
     profile_id: int
+
+# class UserProfileCountryCityResponse(BaseModel):
+#     country_id: int
+#     country_name: str
+#     state: list[UserProfileStateResponse] = Field(default_factory=list)
+#     city: list[UserProfileCityResponse] = Field(default_factory=list)
+
+# class UserProfileStateResponse(BaseModel):
+#     state_id: int
+#     state_name: str
+
+# class UserProfileCityResponse(BaseModel):
+#     city_id: int
+#     city_name: str
+
+class LocationDetailsResponse(BaseModel):
+    country_id: int | None = None
+    country_name: str | None = None
+    selected_state: str | None = None
+    selected_city: str | None = None
+    states: list[str] = Field(default_factory=list)
+    cities: list[str] = Field(default_factory=list)

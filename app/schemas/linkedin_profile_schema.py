@@ -154,3 +154,11 @@ class LinkedInProfileIngestResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class LinkedInProfileDetailsResponse(BaseModel):
+    experience: list[LinkedInProfileExperienceItem] = Field(default_factory=list)
+    education: list[LinkedInProfileEducationItem] = Field(default_factory=list)
+
+    class Config:
+        from_attributes = True

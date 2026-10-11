@@ -26,6 +26,14 @@ from app.routes.chats_route import router as chats_router
 from app.routes.user_profile_route import router as user_profile_router
 from app.routes.matches_route import router as matches_router
 from app.routes.monetization_route import router as monetization_router
+from app.routes.prompt_route import router as prompt_router
+from app.routes.job_search_profile_route import router as job_search_profile_router
+from app.routes.compensation_route import router as compensation_router
+from app.routes.company_size_interest_level_route import router as company_size_interest_level_router
+from app.routes.matching_goal_route import router as matching_goal_router
+from app.routes.commitment_level_route import router as commitment_level_router
+from app.routes.equity_split_route import router as equity_split_router
+from app.routes.work_authorizations_route import router as work_authorizations_router
 from app.services.firebase_service import initialize_firebase
 from app.services.apify_service import initialize_apify
 from app.services.storage_service import initialize_storage, is_local_storage_enabled, get_local_upload_dir
@@ -55,6 +63,12 @@ import app.models.invite_model  # noqa: F401
 import app.models.user_device_token_model  # noqa: F401
 import app.models.notification_outbox_model  # noqa: F401
 import app.models.chat_model  # noqa: F401
+import app.models.matching_goal_model  # noqa: F401
+import app.models.commitment_level_model  # noqa: F401
+import app.models.equity_split_model  # noqa: F401
+import app.models.job_search_profile_model  # noqa: F401
+import app.models.compensation_model  # noqa: F401
+import app.models.work_authorizations_model  # noqa: F401
 import logging
 import os
 
@@ -106,7 +120,15 @@ app.include_router(invites_router)
 app.include_router(chats_router)
 app.include_router(matches_router)
 app.include_router(monetization_router)
+app.include_router(prompt_router)
+app.include_router(job_search_profile_router)
+app.include_router(compensation_router)
+app.include_router(company_size_interest_level_router)
+app.include_router(matching_goal_router)
+app.include_router(commitment_level_router)
 app.include_router(device_token_router)
+app.include_router(equity_split_router)
+app.include_router(work_authorizations_router)
 
 
 @app.on_event("startup")

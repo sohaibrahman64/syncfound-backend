@@ -1,10 +1,19 @@
+﻿from typing import List
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from app.models.user_skill_model import UserSkill
+from app.schemas.user_skill_schema import UserSkillResponse
 from firebase_admin import exceptions as firebase_exceptions
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.linkedin_profile_model import LinkedInProfile
+from app.models.linkedin_profile_model import (
+    LinkedInProfile,
+    LinkedInProfileExperience,
+    LinkedInProfileEducation,
+)
+from app.models.industry_model import Industry
 from app.models.user_model import User
 from app.models.user_profile_model import (
     UserProfile,
@@ -19,7 +28,15 @@ from app.schemas.user_profile_schema import (
     UserProfileUpsertRequest,
     UserProfileUpsertResponse,
 )
+from app.schemas.industry_schema import IndustryResponse
+from app.schemas.linkedin_profile_schema import LinkedInProfileDetailsResponse
 from app.services.firebase_service import verify_firebase_id_token
+from app.schemas.user_profile_schema import LocationPreferenceQuestionResponse, LocationPreferenceAnswerResponse
+from app.models.location_preference_model import LocationPreferenceQuestion, LocationPreferenceAnswer
+from app.models.country_new_model import CountryNew
+from app.models.state_model import State
+from app.models.city_model import City
+from app.schemas.user_profile_schema import LocationDetailsResponse
 
 
 router = APIRouter(prefix="/api/v1", tags=["User Profile"])
@@ -78,12 +95,90 @@ def get_my_profile(
             detail="User profile not found.",
         )
 
+    # Resolve the user's selected city.
+    selected_city_record = None
+
+    if profile.city_id is not None:
+        selected_city_record = (
+            db.query(City).filter(City.id == profile.city_id).first()
+        )
+
+    # Resolve the country through the selected city.
+    country = None
+    if selected_city_record is not None:
+        country = (
+            db.query(CountryNew)
+            .filter(CountryNew.id == selected_city_record.country_id)
+            .first()
+        )
+
+    # Resolve the user's selected state.
+    selected_state_record = None
+    if profile.state_id is not None:
+        selected_state_record = (
+            db.query(State)
+            .filter(State.id == profile.state_id)
+            .first()
+        )
+
+    # Load active states and cities for the selected country.
+    states = []
+    cities = []
+
+    if country is not None:
+        states = (
+            db.query(State.state_name)
+            .filter(State.country_id == country.id,
+                    State.is_active.is_(True),
+            )
+            .order_by(State.state_name.asc())
+            .all()
+        )
+
+        cities = (
+            db.query(City.city_name)
+            .filter(City.country_id == country.id,
+                    City.is_active.is_(True),
+            )
+            .order_by(City.city_name.asc())
+            .all()
+        )
+    location_details = LocationDetailsResponse(
+        country_id=country.id if country else None,
+        country_name=country.country_name if country else None,
+        selected_state=selected_state_record.state_name if selected_state_record else None,
+        selected_city=selected_city_record.city_name if selected_city_record else None,
+        states=[state.state_name for state in states],
+        cities=[city.city_name for city in cities],
+    )
+    location_preferences_questions = (
+        db.query(LocationPreferenceQuestion).all()
+    )
+    
+    location_preferences_data = []
+
+    for question in location_preferences_questions:
+        answers = (
+            db.query(LocationPreferenceAnswer)
+            .filter(LocationPreferenceAnswer.question_id == question.id)
+            .all()
+        )
+
+        location_preferences_data.append(
+            LocationPreferenceQuestionResponse(
+                question_id=question.id,
+                question=question.question,
+                answers=[LocationPreferenceAnswerResponse(id=answer.id, answer=answer.answer) for answer in answers]
+            )
+        )
+
     location_preferences = (
         db.query(UserProfileLocationPreference)
         .filter(UserProfileLocationPreference.user_profile_id == profile.id)
         .order_by(UserProfileLocationPreference.question_id)
         .all()
     )
+
     user_skills = (
         db.query(UserProfileUserSkill)
         .filter(UserProfileUserSkill.user_profile_id == profile.id)
@@ -126,6 +221,10 @@ def get_my_profile(
         age=profile.age,
         state=profile.state_id,
         city=profile.city_id,
+        locationDetails=location_details,
+        locationPreferenceQuestions=list[LocationPreferenceQuestionResponse](
+            location_preferences_data
+        ),
         locationPreference=[
             {
                 "question_id": preference.question_id,
@@ -341,3 +440,79 @@ def upsert_my_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upsert user profile: {str(exc)}",
         ) from exc
+
+
+@router.get("/users/me/profile/industries", response_model=list[IndustryResponse])
+def get_my_industries(
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = _get_authenticated_user(authorization=authorization, db=db)
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found.",
+        )
+
+    user_industries = (
+        db.query(Industry)
+        .join(UserProfileIndustry, Industry.id == UserProfileIndustry.industry_id)
+        .filter(UserProfileIndustry.user_profile_id == profile.id)
+        .order_by(Industry.id.asc())
+        .all()
+    )
+    return user_industries
+
+@router.get("/users/me/profile/skills", response_model=list[UserSkillResponse])
+def get_user_skills(
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = _get_authenticated_user(authorization=authorization, db=db)
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found.",
+        )
+
+    user_skills = (
+        db.query(UserSkill)
+        .join(UserProfileUserSkill, UserSkill.id == UserProfileUserSkill.skill_id)
+        .filter(UserProfileUserSkill.user_profile_id == profile.id)
+        .order_by(UserSkill.id.asc())
+        .all()
+    )
+    return user_skills
+
+
+@router.get("/users/me/profile/linkedin-details", response_model=LinkedInProfileDetailsResponse)
+def get_my_linkedin_details(
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    user = _get_authenticated_user(authorization=authorization, db=db)
+    linkedin_profile = db.query(LinkedInProfile).filter(LinkedInProfile.user_id == user.id).first()
+    if linkedin_profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LinkedIn profile not found.",
+        )
+
+    experiences = (
+        db.query(LinkedInProfileExperience)
+        .filter(LinkedInProfileExperience.profile_id == linkedin_profile.id)
+        .order_by(LinkedInProfileExperience.start_year.desc(), LinkedInProfileExperience.start_month.desc())
+        .all()
+    )
+    educations = (
+        db.query(LinkedInProfileEducation)
+        .filter(LinkedInProfileEducation.profile_id == linkedin_profile.id)
+        .order_by(LinkedInProfileEducation.start_year.desc(), LinkedInProfileEducation.start_month.desc())
+        .all()
+    )
+
+    return LinkedInProfileDetailsResponse(experience=experiences, education=educations)
+
+
