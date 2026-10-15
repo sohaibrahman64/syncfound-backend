@@ -34,6 +34,8 @@ from app.routes.matching_goal_route import router as matching_goal_router
 from app.routes.commitment_level_route import router as commitment_level_router
 from app.routes.equity_split_route import router as equity_split_router
 from app.routes.work_authorizations_route import router as work_authorizations_router
+from app.routes.prior_startup_experience_route import router as prior_startup_experience_router
+from app.routes.user_described_as_route import router as user_described_as_router
 from app.services.firebase_service import initialize_firebase
 from app.services.apify_service import initialize_apify
 from app.services.storage_service import initialize_storage, is_local_storage_enabled, get_local_upload_dir
@@ -69,12 +71,15 @@ import app.models.equity_split_model  # noqa: F401
 import app.models.job_search_profile_model  # noqa: F401
 import app.models.compensation_model  # noqa: F401
 import app.models.work_authorizations_model  # noqa: F401
+import app.models.prior_startup_experience_model  # noqa: F401
+import app.models.user_described_as_model  # noqa: F401
 import logging
 import os
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
 
 if is_local_storage_enabled():
     local_upload_dir = get_local_upload_dir()
@@ -129,6 +134,8 @@ app.include_router(commitment_level_router)
 app.include_router(device_token_router)
 app.include_router(equity_split_router)
 app.include_router(work_authorizations_router)
+app.include_router(prior_startup_experience_router)
+app.include_router(user_described_as_router)
 
 
 @app.on_event("startup")

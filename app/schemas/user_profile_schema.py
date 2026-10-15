@@ -57,7 +57,7 @@ class UserProfileUpsertRequest(BaseModel):
     secondaryRole: int | None = Field(default=None, gt=0)
 
     bio: str | None = None
-    startupIdea: str | None = None
+    startupIdea: str | None = Field(default=None)
 
     fundingStage: int = Field(gt=0)
     timeCommitment: int = Field(gt=0)
