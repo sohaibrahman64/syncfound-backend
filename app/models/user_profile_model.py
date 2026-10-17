@@ -1,34 +1,83 @@
-from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, String, Text, TIMESTAMP, UniqueConstraint
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, String, Text, TIMESTAMP, UniqueConstraint, BigInteger
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
+from app.models.cofounder_skill_model import CofounderSkill
+from app.models.user_skill_model import UserSkill
+from app.models.industry_model import Industry
+from app.models.location_preference_model import (
+    LocationPreferenceQuestion,
+    LocationPreferenceAnswer,
+)
+from app.models.user_profile_experiences_model import UserProfileExperience
+from app.models.user_profile_education_model import UserProfileEducation
 
 
 class UserProfile(Base):
     __tablename__ = "user_profile"
-    __table_args__ = (
-        UniqueConstraint("user_id", name="uq_user_profile_user_id"),
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
     )
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    first_name = Column(String(255), nullable=True)
+    last_name = Column(String(255), nullable=True)
 
-    first_name = Column(String(100), nullable=False)
-    last_name = Column(String(100), nullable=False)
-    date_of_birth = Column(Date, nullable=False)
+    date_of_birth = Column(Date, nullable=True)
     age = Column(Integer, nullable=True)
 
-    state_id = Column(Integer, ForeignKey("states.id", ondelete="RESTRICT"), nullable=False, index=True)
-    city_id = Column(Integer, ForeignKey("cities.id", ondelete="RESTRICT"), nullable=False, index=True)
+    state_id = Column(
+        Integer,
+        ForeignKey("states.id"),
+        nullable=True,
+    )
 
-    matching_purpose_id = Column(Integer, ForeignKey("matching_purpose.id", ondelete="RESTRICT"), nullable=False, index=True)
-    user_role_id = Column(Integer, ForeignKey("user_roles.id", ondelete="RESTRICT"), nullable=False, index=True)
-    cofounder_role_id = Column(Integer, ForeignKey("cofounder_roles.id", ondelete="RESTRICT"), nullable=False, index=True)
+    city_id = Column(
+        Integer,
+        ForeignKey("cities.id"),
+        nullable=True,
+    )
 
-    title = Column(String(255), nullable=True)
-    primary_role_id = Column(Integer, ForeignKey("primary_role.id", ondelete="RESTRICT"), nullable=False, index=True)
-    secondary_role_id = Column(Integer, ForeignKey("secondary_role.id", ondelete="RESTRICT"), nullable=True, index=True)
+    matching_purpose_id = Column(
+        Integer,
+        ForeignKey("matching_purposes.id"),
+        nullable=True,
+    )
+
+    user_role_id = Column(
+        Integer,
+        ForeignKey("user_roles.id"),
+        nullable=True,
+    )
+
+    cofounder_role_id = Column(
+        Integer,
+        ForeignKey("cofounder_roles.id"),
+        nullable=True,
+    )
+
+    title = Column(
+        String(255),
+        nullable=True,
+    )
+
+    primary_role_id = Column(
+        Integer,
+        ForeignKey("roles.id"),
+        nullable=True,
+    )
+
+    secondary_role_id = Column(
+        Integer,
+        ForeignKey("roles.id"),
+        nullable=True,
+    )
 
     bio = Column(Text, nullable=True)
     startup_idea = Column(Text, nullable=True)
@@ -38,124 +87,373 @@ class UserProfile(Base):
     risk_appetite_id = Column(Integer, ForeignKey("risk_appetite.id", ondelete="RESTRICT"), nullable=False, index=True)
     employment_type_id = Column(Integer, ForeignKey("employment_types.id", ondelete="RESTRICT"), nullable=False, index=True)
 
-    company_name = Column(String(255), nullable=True)
-    experience_location = Column(String(255), nullable=True)
-    location_type_id = Column(Integer, ForeignKey("location_types.id", ondelete="RESTRICT"), nullable=True, index=True)
+    # Other existing profile-level columns remain here.
 
-    start_date = Column(DateTime(timezone=True), nullable=True)
-    currently_work_here = Column(Boolean, nullable=False, default=False)
-    end_date = Column(DateTime(timezone=True), nullable=True)
+    headline = Column(
+        String(500),
+        nullable=True,
+    )
 
-    linkedin_url = Column(Text, nullable=True)
-    linkedin_username = Column(String(255), nullable=True)
+    founder_count = Column(
+        Integer,  # Using Integer instead of SmallInteger for broader compatibility
+        nullable=True,
+    )
 
-    linkedin_profile_preview_headline = Column(Text, nullable=True)
-    linkedin_profile_preview_first_organization = Column(String(255), nullable=True)
-    linkedin_profile_preview_first_education_institution = Column(String(255), nullable=True)
-    linkedin_profile_preview_first_location = Column(String(255), nullable=True)
-    linkedin_profile_preview_connections = Column(String(255), nullable=True)
+    prior_startup_experience_id = Column(
+        Integer,
+        ForeignKey("prior_startup_experiences.id"),
+        nullable=True,
+    )
 
-    linkedin_profile_picture_url = Column(Text, nullable=True)
-    pending_profile_image_uri = Column(Text, nullable=True)
-    pending_profile_image_source = Column(String(50), nullable=True)
+    work_authorization_id = Column(
+        Integer,
+        ForeignKey("work_authorizations.id"),
+        nullable=True,
+    )
 
-    profile_image_rotation = Column(Float, nullable=False, default=0)
-    profile_image_scale = Column(Float, nullable=False, default=1)
-    profile_image_translate_x = Column(Float, nullable=False, default=0)
-    profile_image_translate_y = Column(Float, nullable=False, default=0)
+    linkedin_profile_id = Column(
+        BigInteger,
+        ForeignKey("linkedin_profiles.id"),
+        nullable=True,
+    )
 
-    profile_image_crop_x = Column(Float, nullable=True)
-    profile_image_crop_y = Column(Float, nullable=True)
-    profile_image_crop_width = Column(Float, nullable=True)
-    profile_image_crop_height = Column(Float, nullable=True)
+    linkedin_url = Column(
+        String(500),
+        nullable=True,
+    )
 
-    profile_image_uri = Column(Text, nullable=True)
-    profile_image_source = Column(String(50), nullable=True)
+    linkedin_username = Column(
+        String(255),
+        nullable=True,
+    )
 
-    linkedin_profile_id = Column(Integer, ForeignKey("linkedin_profiles.id", ondelete="SET NULL"), nullable=True, index=True)
+    # LinkedIn preview fields
+    linkedin_profile_preview_headline = Column(
+        Text,
+        nullable=True,
+    )
 
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    linkedin_profile_preview_first_organization = Column(
+        String(255),
+        nullable=True,
+    )
+
+    linkedin_profile_preview_first_education_institution = Column(
+        String(255),
+        nullable=True,
+    )
+
+    linkedin_profile_preview_first_location = Column(
+        String(255),
+        nullable=True,
+    )
+
+    linkedin_profile_preview_connections = Column(
+        Integer,
+        nullable=True,
+    )
+
+    # Profile image fields
+    linkedin_profile_picture_url = Column(
+        Text,
+        nullable=True,
+    )
+
+    pending_profile_image_uri = Column(
+        Text,
+        nullable=True,
+    )
+
+    pending_profile_image_source = Column(
+        String(50),
+        nullable=True,
+    )
+
+    profile_image_rotation = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_scale = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_translate_x = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_translate_y = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_crop_x = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_crop_y = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_crop_width = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_crop_height = Column(
+        Float,
+        nullable=True,
+    )
+
+    profile_image_uri = Column(
+        Text,
+        nullable=True,
+    )
+
+    profile_image_source = Column(
+        String(50),
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
     updated_at = Column(
-        TIMESTAMP(timezone=True),
+        DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
     )
 
-    location_preferences = relationship(
-        "UserProfileLocationPreference",
+    experiences = relationship(
+        "UserProfileExperience",
         back_populates="user_profile",
         cascade="all, delete-orphan",
+        order_by="UserProfileExperience.display_order",
     )
+
+    education = relationship(
+        "UserProfileEducation",
+        back_populates="user_profile",
+        cascade="all, delete-orphan",
+        order_by="UserProfileEducation.display_order",
+    )
+
+    prompts = relationship(
+        "UserProfilePrompt",
+        back_populates="user_profile",
+        cascade="all, delete-orphan",
+        order_by="UserProfilePrompt.display_order",
+    )
+
+    compensation = relationship(
+        "UserProfileCompensation",
+        back_populates="user_profile",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+    # User skills relationship
     user_skills = relationship(
         "UserProfileUserSkill",
         back_populates="user_profile",
         cascade="all, delete-orphan",
     )
+
+    # Cofounder skills relationship
     cofounder_skills = relationship(
         "UserProfileCofounderSkill",
         back_populates="user_profile",
         cascade="all, delete-orphan",
     )
+
+    # Industry relationships
     industries = relationship(
         "UserProfileIndustry",
         back_populates="user_profile",
         cascade="all, delete-orphan",
     )
 
-
-class UserProfileLocationPreference(Base):
-    __tablename__ = "user_profile_location_preferences"
-    __table_args__ = (
-        UniqueConstraint("user_profile_id", "question_id", name="uq_user_profile_location_preferences_profile_question"),
+    # Location preferences relationship
+    location_preferences = relationship(
+        "UserProfileLocationPreference",
+        back_populates="user_profile",
+        cascade="all, delete-orphan",
     )
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_profile_id = Column(Integer, ForeignKey("user_profile.id", ondelete="CASCADE"), nullable=False, index=True)
-    question_id = Column(Integer, ForeignKey("location_preference_questions.id", ondelete="RESTRICT"), nullable=False, index=True)
-    selected_answer_id = Column(Integer, ForeignKey("location_preference_answers.id", ondelete="RESTRICT"), nullable=False, index=True)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
-
-    user_profile = relationship("UserProfile", back_populates="location_preferences")
 
 
 class UserProfileUserSkill(Base):
     __tablename__ = "user_profile_user_skills"
-    __table_args__ = (
-        UniqueConstraint("user_profile_id", "skill_id", name="uq_user_profile_user_skills_profile_skill"),
-    )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_profile_id = Column(Integer, ForeignKey("user_profile.id", ondelete="CASCADE"), nullable=False, index=True)
-    skill_id = Column(Integer, ForeignKey("user_skills.id", ondelete="RESTRICT"), nullable=False, index=True)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
-    user_profile = relationship("UserProfile", back_populates="user_skills")
+    # Foreign key to user profile
+    user_profile_id = Column(
+        BigInteger,
+        ForeignKey("user_profile.id"),
+        nullable=False,
+    )
+
+    # Foreign key to user skill
+    skill_id = Column(
+        Integer,
+        ForeignKey("user_skills.id"),
+        nullable=False,
+    )
+
+    # Relationships
+    user_profile = relationship(
+        "UserProfile",
+        back_populates="user_skills",
+    )
+    skill = relationship(
+        "UserSkill",
+    )
 
 
 class UserProfileCofounderSkill(Base):
     __tablename__ = "user_profile_cofounder_skills"
-    __table_args__ = (
-        UniqueConstraint("user_profile_id", "skill_id", name="uq_user_profile_cofounder_skills_profile_skill"),
-    )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_profile_id = Column(Integer, ForeignKey("user_profile.id", ondelete="CASCADE"), nullable=False, index=True)
-    skill_id = Column(Integer, ForeignKey("cofounder_skills.id", ondelete="RESTRICT"), nullable=False, index=True)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
-    user_profile = relationship("UserProfile", back_populates="cofounder_skills")
+    # Foreign key to user profile
+    user_profile_id = Column(
+        BigInteger,
+        ForeignKey("user_profile.id"),
+        nullable=False,
+    )
+
+    # Foreign key to cofounder skill
+    skill_id = Column(
+        Integer,
+        ForeignKey("cofounder_skills.id"),
+        nullable=False,
+    )
+
+    # Relationships
+    user_profile = relationship(
+        "UserProfile",
+        back_populates="cofounder_skills",
+    )
+    skill = relationship(
+        "CofounderSkill",
+    )
 
 
 class UserProfileIndustry(Base):
     __tablename__ = "user_profile_industries"
-    __table_args__ = (
-        UniqueConstraint("user_profile_id", "industry_id", name="uq_user_profile_industries_profile_industry"),
-    )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_profile_id = Column(Integer, ForeignKey("user_profile.id", ondelete="CASCADE"), nullable=False, index=True)
-    industry_id = Column(Integer, ForeignKey("industries.id", ondelete="RESTRICT"), nullable=False, index=True)
-    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
-    user_profile = relationship("UserProfile", back_populates="industries")
+    # Foreign key to user profile
+    user_profile_id = Column(
+        BigInteger,
+        ForeignKey("user_profile.id"),
+        nullable=False,
+    )
+
+    # Foreign key to industry
+    industry_id = Column(
+        Integer,
+        ForeignKey("industries.id"),
+        nullable=False,
+    )
+
+    # Relationships
+    user_profile = relationship(
+        "UserProfile",
+        back_populates="industries",
+    )
+    industry = relationship(
+        "Industry",
+    )
+
+
+class UserProfileLocationPreference(Base):
+    __tablename__ = "user_profile_location_preferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Foreign key to user profile
+    user_profile_id = Column(
+        BigInteger,
+        ForeignKey("user_profile.id"),
+        nullable=False,
+    )
+
+    # Foreign key to location preference question
+    question_id = Column(
+        Integer,
+        ForeignKey("location_preference_questions.id"),
+        nullable=False,
+    )
+
+    # Foreign key to location preference answer
+    selected_answer_id = Column(
+        Integer,
+        ForeignKey("location_preference_answers.id"),
+        nullable=False,
+    )
+
+    # Relationships
+    user_profile = relationship(
+        "UserProfile",
+        back_populates="location_preferences",
+    )
+    question = relationship(
+        "LocationPreferenceQuestion",
+    )
+    selected_answer = relationship(
+        "LocationPreferenceAnswer",
+    )

@@ -29,6 +29,7 @@ from app.models.user_profile_model import (
     UserProfileCofounderSkill,
     UserProfileIndustry,
     UserProfileUserSkill,
+    UserProfileExperience,
 )
 from app.models.user_skill_model import UserSkill
 from app.models.user_role_model import UserRole
@@ -324,6 +325,39 @@ def get_matches_feed(
         .subquery()
     )
 
+    # Subquery to get primary experience for each user profile using ROW_NUMBER
+    experience_ranked = (
+        db.query(
+            UserProfileExperience.user_profile_id,
+            UserProfileExperience.location.label("experience_location"),
+            UserProfileExperience.location_type_id.label("location_type_id"),
+            UserProfileExperience.start_date.label("start_date"),
+            UserProfileExperience.currently_work_here.label("currently_work_here"),
+            UserProfileExperience.end_date.label("end_date"),
+            func.row_number().over(
+                partition_by=UserProfileExperience.user_profile_id,
+                order_by=[
+                    UserProfileExperience.currently_work_here.desc(),
+                    UserProfileExperience.display_order
+                ]
+            ).label("rn")
+        )
+        .subquery()
+    )
+
+    primary_experience_subq = (
+        db.query(
+            experience_ranked.c.user_profile_id,
+            experience_ranked.c.experience_location,
+            experience_ranked.c.location_type_id,
+            experience_ranked.c.start_date,
+            experience_ranked.c.currently_work_here,
+            experience_ranked.c.end_date,
+        )
+        .filter(experience_ranked.c.rn == 1)
+        .subquery()
+    )
+
     rows = (
         db.query(
             UserProfile.user_id.label("candidate_id"),
@@ -334,7 +368,11 @@ def get_matches_feed(
             UserProfile.last_name.label("last_name"),
             City.city_name.label("city"),
             CountryNew.iso2.label("country_code"),
-            UserProfile.experience_location.label("location_text"),
+            primary_experience_subq.c.experience_location.label("location_text"),
+            primary_experience_subq.c.location_type_id.label("location_type_id"),
+            primary_experience_subq.c.start_date.label("start_date"),
+            primary_experience_subq.c.currently_work_here.label("currently_work_here"),
+            primary_experience_subq.c.end_date.label("end_date"),
             CofounderRole.role_name.label("role"),
             MatchingPurpose.matching_purpose.label("intent_badge"),
             UserProfile.bio.label("experience_summary"),
@@ -357,6 +395,7 @@ def get_matches_feed(
         .outerjoin(CofounderRole, CofounderRole.id == UserProfile.cofounder_role_id)
         .outerjoin(MatchingPurpose, MatchingPurpose.id == UserProfile.matching_purpose_id)
         .outerjoin(action_state_subquery, action_state_subquery.c.target_user_id == UserProfile.user_id)
+        .outerjoin(primary_experience_subq, primary_experience_subq.c.user_profile_id == UserProfile.id)
         .filter(UserProfile.user_id != user.id)
         .filter(~UserProfile.user_id.in_(acted_target_subquery))
         .all()

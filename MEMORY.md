@@ -1,0 +1,2 @@
+- [Fixed relationship back_populates in UserProfile model](fix-relationship-backpopulates-userprofile-model.md) — Corrected incorrect back_populates values for user_skills, cofounder_skills, industries, and location_preferences relationships
+- [Fixed AttributeError in matches_route](fix-attribute-error-matches-route.md) — Resolved AttributeError by correctly joining to UserProfileExperience table instead of trying to access experience fields directly on UserProfile model
