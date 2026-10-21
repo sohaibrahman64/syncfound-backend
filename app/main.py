@@ -24,6 +24,7 @@ from app.routes.device_token_route import router as device_token_router
 from app.routes.invites_route import router as invites_router
 from app.routes.chats_route import router as chats_router
 from app.routes.user_profile_route import router as user_profile_router
+from app.routes.profile_edit_route import router as profile_edit_router
 from app.routes.matches_route import router as matches_router
 from app.routes.monetization_route import router as monetization_router
 from app.routes.prompt_route import router as prompt_router
@@ -121,6 +122,7 @@ app.include_router(location_type_router)
 app.include_router(linkedin_profile_router)
 app.include_router(image_upload_router)
 app.include_router(user_profile_router)
+app.include_router(profile_edit_router)
 app.include_router(invites_router)
 app.include_router(chats_router)
 app.include_router(matches_router)

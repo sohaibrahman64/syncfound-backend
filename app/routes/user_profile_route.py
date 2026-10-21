@@ -36,7 +36,7 @@ from app.models.location_preference_model import LocationPreferenceQuestion, Loc
 from app.models.country_new_model import CountryNew
 from app.models.state_model import State
 from app.models.city_model import City
-from app.schemas.user_profile_schema import LocationDetailsResponse
+from app.schemas.user_profile_schema import LocationDetailsResponse, UserProfileCityResponse
 
 
 router = APIRouter(prefix="/api/v1", tags=["User Profile"])
@@ -136,7 +136,7 @@ def get_my_profile(
         )
 
         cities = (
-            db.query(City.city_name)
+            db.query(City)
             .filter(City.country_id == country.id,
                     City.is_active.is_(True),
             )
@@ -149,7 +149,10 @@ def get_my_profile(
         selected_state=selected_state_record.state_name if selected_state_record else None,
         selected_city=selected_city_record.city_name if selected_city_record else None,
         states=[state.state_name for state in states],
-        cities=[city.city_name for city in cities],
+        cities=[
+            UserProfileCityResponse(city_id=city.id, city_name=city.city_name)
+            for city in cities
+        ],
     )
     location_preferences_questions = (
         db.query(LocationPreferenceQuestion).all()

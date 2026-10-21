@@ -29,6 +29,7 @@ class UserProfile(Base):
     title = Column(String(255), nullable=True)
     primary_role_id = Column(Integer, ForeignKey("primary_role.id", ondelete="RESTRICT"), nullable=False, index=True)
     secondary_role_id = Column(Integer, ForeignKey("secondary_role.id", ondelete="RESTRICT"), nullable=True, index=True)
+    years_of_experience = Column(Integer, nullable=True)
 
     bio = Column(Text, nullable=True)
     startup_idea = Column(Text, nullable=True)

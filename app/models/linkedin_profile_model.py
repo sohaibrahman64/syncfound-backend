@@ -130,6 +130,7 @@ class LinkedInProfileEducation(Base):
     degree = Column(Text, nullable=True)
     degree_name = Column(String(255), nullable=True)
     field_of_study = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
     duration = Column(String(255), nullable=True)
     school_linkedin_url = Column(Text, nullable=True)
     start_year = Column(Integer, nullable=True)

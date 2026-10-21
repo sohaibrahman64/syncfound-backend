@@ -124,9 +124,9 @@ class UserProfileUpsertResponse(BaseModel):
 #     state_id: int
 #     state_name: str
 
-# class UserProfileCityResponse(BaseModel):
-#     city_id: int
-#     city_name: str
+class UserProfileCityResponse(BaseModel):
+    city_id: int
+    city_name: str
 
 class LocationDetailsResponse(BaseModel):
     country_id: int | None = None
@@ -134,4 +134,4 @@ class LocationDetailsResponse(BaseModel):
     selected_state: str | None = None
     selected_city: str | None = None
     states: list[str] = Field(default_factory=list)
-    cities: list[str] = Field(default_factory=list)
+    cities: list[UserProfileCityResponse] = Field(default_factory=list)
