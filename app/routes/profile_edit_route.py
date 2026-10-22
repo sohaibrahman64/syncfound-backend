@@ -13,7 +13,24 @@ from app.models.linkedin_profile_model import (
     LinkedInProfileEducation,
     LinkedInProfileExperience,
 )
-from app.models.location_preference_model import LocationPreferenceAnswer
+from app.models.commitment_level_model import CommitmentLevel
+from app.models.company_size_interest_level_model import CompanySizeInterestLevel
+from app.models.compensation_model import (
+    CashEquityExpectation,
+    Currency,
+    ExpectedMinimumSalary,
+    SalaryDuration,
+)
+from app.models.equity_split_model import EquitySplit
+from app.models.job_search_profile_model import JobSearchProfile
+from app.models.location_preference_model import (
+    LocationPreferenceAnswer,
+    LocationPreferenceQuestion,
+)
+from app.models.matching_goal_model import MatchingGoal
+from app.models.prior_startup_experience_model import PriorStartupExperience
+from app.models.prompt_model import Prompt
+from app.models.user_skill_model import UserSkill
 from app.models.profile_edit_model import (
     UserJobSearchProfile,
     UserProfileCompanySizeInterest,
@@ -47,6 +64,52 @@ from app.schemas.profile_edit_schema import (
 
 
 router = APIRouter(prefix="/api/v1", tags=["User Profile"])
+
+
+_COMPANY_SIZE_LABELS = {
+    1: "Founding (1-5 employees)",
+    2: "Growing (6-10 employees)",
+    3: "Scaling (11-50 employees)",
+    4: "Mid-size (50-100)",
+    5: "Large (200-1000 employees)",
+    6: "Enterprise (>1000 employees)",
+}
+
+
+def _answer_item(
+    db: Session,
+    model: Any,
+    item_id: int | None,
+    answer_field: str,
+    *,
+    id_field: str = "id",
+) -> dict[str, Any] | None:
+    if item_id is None:
+        return None
+    row = db.query(model).filter(getattr(model, id_field) == item_id).first()
+    return {
+        "id": item_id,
+        "answer": getattr(row, answer_field, None) if row is not None else None,
+    }
+
+
+def _display_year_month(value: int | str | None, placeholder: str) -> str:
+    return placeholder if value is None or str(value).strip() == "" else str(value)
+
+
+def _display_date_part(value: date | None, part: str, placeholder: str) -> str:
+    return str(getattr(value, part)) if value is not None else placeholder
+
+
+def _display_amount(value: Any) -> int | float | None:
+    if value is None:
+        return None
+    try:
+        normalized = "".join(char for char in str(value) if char.isdigit() or char in ".-")
+        amount = Decimal(normalized)
+    except (InvalidOperation, ValueError):
+        return None
+    return int(amount) if amount == amount.to_integral_value() else float(amount)
 
 
 def _present_values(payload: Any, field_mapping: dict[str, str]) -> dict[str, Any]:
@@ -315,6 +378,380 @@ def _validate_active_branch(raw_value: Any, schema: Any, branch_name: str) -> An
             for error in exc.errors(include_context=False)
         ]
         raise HTTPException(status_code=422, detail=errors) from exc
+
+
+@router.get("/users/me/profile/edit")
+def get_my_profile_for_edit(
+    authorization: str = Header(default=""),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = _get_authenticated_user(authorization=authorization, db=db)
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found.")
+
+    current_edit = (
+        db.query(UserProfileEdit)
+        .filter(UserProfileEdit.user_profile_id == profile.id)
+        .order_by(UserProfileEdit.id.asc())
+        .first()
+    )
+
+    prompts = (
+        db.query(UserProfilePrompt)
+        .filter(UserProfilePrompt.user_profile_id == profile.id)
+        .order_by(UserProfilePrompt.display_order.asc(), UserProfilePrompt.id.asc())
+        .all()
+    )
+    prompt_response = []
+    for prompt_row in prompts:
+        prompt = db.get(Prompt, prompt_row.prompt_id)
+        prompt_response.append(
+            {
+                "id": prompt_row.prompt_id,
+                "prompt": prompt.prompt_name if prompt is not None else None,
+                "answer": prompt_row.answer,
+            }
+        )
+
+    matching_goal_row = (
+        db.get(UserProfileMatchingGoal, current_edit.user_profile_matching_goal_id)
+        if current_edit and current_edit.user_profile_matching_goal_id is not None
+        else None
+    )
+    matching_goal = None
+    if matching_goal_row is not None:
+        matching_goal = _answer_item(db, MatchingGoal, matching_goal_row.matching_goal_id, "matching_goal")
+        if matching_goal_row.is_hiring is None:
+            matching_goal["isHiring"] = None
+        else:
+            matching_goal["isHiring"] = "Yes" if matching_goal_row.is_hiring else "No"
+
+    commitment_row = (
+        db.get(UserProfileCommitmentLevel, current_edit.user_profile_commitment_level_id)
+        if current_edit and current_edit.user_profile_commitment_level_id is not None
+        else None
+    )
+    equity_row = (
+        db.get(UserProfileEquitySplit, current_edit.user_profile_equity_split_id)
+        if current_edit and current_edit.user_profile_equity_split_id is not None
+        else None
+    )
+    founder_skills = (
+        db.query(UserProfileUserSkill)
+        .filter(UserProfileUserSkill.user_profile_id == profile.id)
+        .order_by(UserProfileUserSkill.skill_id.asc())
+        .all()
+    )
+    founder_skill_response = []
+    for skill_row in founder_skills:
+        skill = db.get(UserSkill, skill_row.skill_id)
+        founder_skill_response.append(
+            {"id": skill_row.skill_id, "answer": skill.skill_name if skill is not None else None}
+        )
+
+    commitment_response = (
+        _answer_item(db, CommitmentLevel, commitment_row.commitment_level_id, "commitment_level")
+        if commitment_row is not None
+        else None
+    )
+    equity_response = None
+    if equity_row is not None:
+        equity_response = _answer_item(db, EquitySplit, equity_row.equity_split_id, "equity_split")
+        equity_response["minEquityRange"] = equity_row.min_equity_range
+        equity_response["maxEquityRange"] = equity_row.max_equity_range
+
+    job_search_rows = (
+        db.query(UserJobSearchProfile)
+        .filter(UserJobSearchProfile.user_profile_id == profile.id)
+        .order_by(UserJobSearchProfile.id.asc())
+        .all()
+    )
+    pointed_job_search = (
+        db.get(UserJobSearchProfile, current_edit.user_job_search_profile_id)
+        if current_edit and current_edit.user_job_search_profile_id is not None
+        else None
+    )
+    if pointed_job_search is not None and all(row.id != pointed_job_search.id for row in job_search_rows):
+        job_search_rows.append(pointed_job_search)
+        job_search_rows.sort(key=lambda row: row.id)
+    job_search_item = pointed_job_search or (job_search_rows[0] if job_search_rows else None)
+    job_search_response = None
+    if job_search_item is not None:
+        job_search_response = _answer_item(
+            db, JobSearchProfile, job_search_item.job_search_profile_id, "job_search_profile"
+        )
+        job_search_response["jobSearchWorkType"] = list(
+            dict.fromkeys(row.job_search_profile_work_type_id for row in job_search_rows)
+        )
+        job_search_response["foundersCanSee"] = job_search_item.founders_can_see
+
+    bio_experience_response = {
+        "title": profile.title,
+        "primaryRole": profile.primary_role_id,
+        "secondaryRole": profile.secondary_role_id,
+        "yearsOfExperience": profile.years_of_experience,
+        "bio": profile.bio,
+        "startupIdea": profile.startup_idea,
+        "fundingStage": profile.funding_stage_id,
+        "riskAppetite": profile.risk_appetite_id,
+        "employmentType": profile.employment_type_id,
+        "companyName": profile.company_name,
+        "location": profile.experience_location,
+        "locationType": profile.location_type_id,
+    }
+
+    compensation_row = (
+        db.get(UserProfileCompensation, current_edit.user_profile_compensation_id)
+        if current_edit and current_edit.user_profile_compensation_id is not None
+        else None
+    )
+    if compensation_row is None:
+        compensation_row = (
+            db.query(UserProfileCompensation)
+            .filter(UserProfileCompensation.user_profile_id == profile.id)
+            .order_by(UserProfileCompensation.id.asc())
+            .first()
+        )
+    compensation_response = None
+    if compensation_row is not None:
+        compensation_response = {
+            "cashEquityExpectation": _answer_item(
+                db,
+                CashEquityExpectation,
+                compensation_row.cash_equity_expectation_id,
+                "cash_equity_expectation",
+            ),
+            "expectedMinimumSalary": _answer_item(
+                db,
+                ExpectedMinimumSalary,
+                compensation_row.expected_minimum_salary_id,
+                "expected_minimum_salary",
+            ),
+            "salaryDuration": _answer_item(
+                db, SalaryDuration, compensation_row.salary_duration_id, "salary_duration"
+            ),
+            "currency": _answer_item(
+                db,
+                Currency,
+                compensation_row.currency_id,
+                "currency_code",
+                id_field="currency_id",
+            ),
+            "amount": _display_amount(compensation_row.annual_salary),
+        }
+
+    company_size_rows = (
+        db.query(UserProfileCompanySizeInterest)
+        .filter(UserProfileCompanySizeInterest.user_profile_id == profile.id)
+        .order_by(UserProfileCompanySizeInterest.id.asc())
+        .all()
+    )
+    company_size_response = []
+    for row in company_size_rows:
+        interest_level = db.get(CompanySizeInterestLevel, row.company_size_interest_level_id)
+        company_size_response.append(
+            {
+                "companySizeId": row.company_size_id,
+                "companySizeAnswer": _COMPANY_SIZE_LABELS.get(row.company_size_id),
+                "interestLevelId": row.company_size_interest_level_id,
+                "interestLevelAnswer": (
+                    interest_level.company_size_interest_level if interest_level is not None else None
+                ),
+            }
+        )
+
+    work_authorization_row = (
+        db.query(UserProfileWorkAuthorization)
+        .filter(UserProfileWorkAuthorization.user_profile_id == profile.id)
+        .order_by(UserProfileWorkAuthorization.id.asc())
+        .first()
+    )
+    prior_startup_row = (
+        db.get(UserProfilePriorStartupExperience, current_edit.user_profile_prior_startup_exp_id)
+        if current_edit and current_edit.user_profile_prior_startup_exp_id is not None
+        else None
+    )
+    industry_rows = (
+        db.query(UserProfileIndustry)
+        .filter(UserProfileIndustry.user_profile_id == profile.id)
+        .order_by(UserProfileIndustry.industry_id.asc())
+        .all()
+    )
+
+    city = db.get(City, profile.city_id) if profile.city_id is not None else None
+    location_preferences = (
+        db.query(UserProfileLocationPreference)
+        .filter(UserProfileLocationPreference.user_profile_id == profile.id)
+        .order_by(UserProfileLocationPreference.question_id.asc())
+        .all()
+    )
+    preference_questions = (
+        db.query(LocationPreferenceQuestion).order_by(LocationPreferenceQuestion.id.asc()).all()
+    )
+    preference_answers = (
+        db.query(LocationPreferenceAnswer)
+        .order_by(LocationPreferenceAnswer.question_id.asc(), LocationPreferenceAnswer.id.asc())
+        .all()
+    )
+    answers_by_question: dict[int, list[LocationPreferenceAnswer]] = {}
+    for answer in preference_answers:
+        answers_by_question.setdefault(answer.question_id, []).append(answer)
+
+    linked_in_profile = db.query(LinkedInProfile).filter(LinkedInProfile.user_id == user.id).first()
+    linkedin_experiences = (
+        db.query(LinkedInProfileExperience)
+        .filter(LinkedInProfileExperience.profile_id == linked_in_profile.id)
+        .order_by(LinkedInProfileExperience.id.asc())
+        .all()
+        if linked_in_profile is not None
+        else []
+    )
+    additional_experiences = (
+        db.query(UserProfileEditExperience)
+        .filter(UserProfileEditExperience.user_profile_id == profile.id)
+        .order_by(UserProfileEditExperience.id.asc())
+        .all()
+    )
+    linkedin_education = (
+        db.query(LinkedInProfileEducation)
+        .filter(LinkedInProfileEducation.profile_id == linked_in_profile.id)
+        .order_by(LinkedInProfileEducation.id.asc())
+        .all()
+        if linked_in_profile is not None
+        else []
+    )
+    additional_education = (
+        db.query(UserProfileEditEducation)
+        .filter(UserProfileEditEducation.user_profile_id == profile.id)
+        .order_by(UserProfileEditEducation.id.asc())
+        .all()
+    )
+
+    def experience_response(row: Any, *, from_linkedin: bool) -> dict[str, Any]:
+        if from_linkedin:
+            start_month = _display_year_month(row.start_month, "mm")
+            end_month = _display_year_month(row.end_month, "mm")
+            start_year = _display_year_month(row.start_year, "yyyy")
+            end_year = _display_year_month(row.end_year, "yyyy")
+            currently_working = row.is_current
+        else:
+            start_month = _display_date_part(row.start_date, "month", "mm")
+            end_month = _display_date_part(row.end_date, "month", "mm")
+            start_year = _display_date_part(row.start_date, "year", "yyyy")
+            end_year = _display_date_part(row.end_date, "year", "yyyy")
+            currently_working = row.is_currently_working
+        return {
+            "title": row.title,
+            "company": row.company,
+            "currentlyWorkHere": currently_working,
+            "startMonth": start_month,
+            "endMonth": end_month,
+            "startYear": start_year,
+            "endYear": end_year,
+            "description": row.description,
+        }
+
+    def education_response(row: Any, *, from_linkedin: bool) -> dict[str, Any]:
+        if from_linkedin:
+            start_month = _display_year_month(row.start_month, "mm")
+            end_month = _display_year_month(row.end_month, "mm")
+            start_year = _display_year_month(row.start_year, "yyyy")
+            end_year = _display_year_month(row.end_year, "yyyy")
+        else:
+            start_month = _display_date_part(row.start_date, "month", "mm")
+            end_month = _display_date_part(row.end_date, "month", "mm")
+            start_year = _display_date_part(row.start_date, "year", "yyyy")
+            end_year = _display_date_part(row.end_date, "year", "yyyy")
+        return {
+            "school": row.school,
+            "degree": row.degree,
+            "fieldOfStudy": row.field_of_study,
+            "startMonth": start_month,
+            "endMonth": end_month,
+            "startYear": start_year,
+            "endYear": end_year,
+            "description": row.description,
+        }
+
+    return {
+        "headline": current_edit.user_profile_headline if current_edit else profile.title,
+        "profileImageUri": profile.profile_image_uri,
+        "userDescribedAs": current_edit.user_described_as_id if current_edit else None,
+        "userPrompts": prompt_response,
+        "userBackgroundAsAFounder": {
+            "matchingGoal": matching_goal,
+            "commitmentLevel": commitment_response,
+            "noOfFounders": current_edit.user_profile_no_of_founders if current_edit else None,
+            "userSkills": founder_skill_response,
+            "equitySplit": equity_response,
+        },
+        "userBackgroundAsATalent": {
+            "jobSearchProfile": job_search_response,
+            "bioExperience": bio_experience_response,
+            "compensation": compensation_response,
+            "companySizeInterest": company_size_response,
+            "workAuthorization": (
+                work_authorization_row.work_authorization_id if work_authorization_row is not None else None
+            ),
+        },
+        "userAbout": {
+            "industries": [row.industry_id for row in industry_rows],
+            "priorStartupExperience": (
+                _answer_item(
+                    db,
+                    PriorStartupExperience,
+                    prior_startup_row.prior_startup_experience_id,
+                    "prior_startup_experience",
+                )
+                if prior_startup_row is not None
+                else None
+            ),
+        },
+        "userProfile": {
+            "name": f"{profile.first_name} {profile.last_name}".strip(),
+            "age": profile.age,
+            "location": {
+                "city": city.city_name if city is not None else None,
+                "locationPreference": [
+                    {
+                        "question_id": row.question_id,
+                        "selected_answer_id": row.selected_answer_id,
+                    }
+                    for row in location_preferences
+                ],
+                "locationPreferenceQuestions": [
+                    {
+                        "question_id": question.id,
+                        "question": question.question,
+                        "answers": [
+                            {"id": answer.id, "answer": answer.answer}
+                            for answer in answers_by_question.get(question.id, [])
+                        ],
+                    }
+                    for question in preference_questions
+                ],
+            },
+            "linkedInUrl": profile.linkedin_url or (linked_in_profile.profile_url if linked_in_profile else None),
+            "schedulingLink": current_edit.user_profile_scheduling_link if current_edit else None,
+            "experiences": {
+                "linkedinJobExperiences": [
+                    experience_response(row, from_linkedin=True) for row in linkedin_experiences
+                ],
+                "additionalJobExperiences": [
+                    experience_response(row, from_linkedin=False) for row in additional_experiences
+                ],
+            },
+            "education": {
+                "linkedInEducation": [
+                    education_response(row, from_linkedin=True) for row in linkedin_education
+                ],
+                "additionalEducation": [
+                    education_response(row, from_linkedin=False) for row in additional_education
+                ],
+            },
+        },
+    }
 
 
 @router.patch("/users/me/profile/edit", response_model=UserProfileEditResponse)
@@ -630,7 +1067,6 @@ def edit_my_profile(
 
         talent_rows: dict[str, Any] = {}
         talent = payload.userBackgroundAsATalent
-        import pdb; pdb.set_trace();
         if talent:
             if talent.jobSearchProfile:
                 search = talent.jobSearchProfile
