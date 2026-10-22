@@ -52,7 +52,11 @@ from app.models.user_profile_model import (
     UserProfileUserSkill,
 )
 from app.models.city_model import City
-from app.routes.user_profile_route import _get_authenticated_user
+from app.models.country_new_model import CountryNew
+from app.routes.user_profile_route import (
+    _get_authenticated_user,
+    _get_location_preference_selections,
+)
 from app.schemas.profile_edit_schema import (
     EducationEdit,
     ExperienceEdit,
@@ -580,12 +584,20 @@ def get_my_profile_for_edit(
     )
 
     city = db.get(City, profile.city_id) if profile.city_id is not None else None
-    location_preferences = (
-        db.query(UserProfileLocationPreference)
-        .filter(UserProfileLocationPreference.user_profile_id == profile.id)
-        .order_by(UserProfileLocationPreference.question_id.asc())
-        .all()
+    country = (
+        db.query(CountryNew).filter(CountryNew.id == city.country_id).first()
+        if city is not None
+        else None
     )
+    cities = (
+        db.query(City)
+        .filter(City.country_id == country.id, City.is_active.is_(True))
+        .order_by(City.city_name.asc())
+        .all()
+        if country is not None
+        else []
+    )
+    location_preferences = _get_location_preference_selections(db, profile.id, user.id)
     preference_questions = (
         db.query(LocationPreferenceQuestion).order_by(LocationPreferenceQuestion.id.asc()).all()
     )
@@ -713,13 +725,11 @@ def get_my_profile_for_edit(
             "age": profile.age,
             "location": {
                 "city": city.city_name if city is not None else None,
-                "locationPreference": [
-                    {
-                        "question_id": row.question_id,
-                        "selected_answer_id": row.selected_answer_id,
-                    }
-                    for row in location_preferences
+                "cities": [
+                    {"city_id": item.id, "city_name": item.city_name}
+                    for item in cities
                 ],
+                "locationPreferences": location_preferences,
                 "locationPreferenceQuestions": [
                     {
                         "question_id": question.id,

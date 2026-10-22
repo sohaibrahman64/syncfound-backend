@@ -130,7 +130,7 @@ def get_my_profile(
         age=profile.age,
         state=profile.state_id,
         city=profile.city_id,
-        locationPreference=[
+        locationPreferences=[
             {
                 "question_id": preference.question_id,
                 "selected_answer_id": preference.selected_answer_id,
@@ -289,7 +289,7 @@ def upsert_my_profile(
             UserProfileIndustry.user_profile_id == profile.id
         ).delete(synchronize_session=False)
 
-        for location_preference in payload.locationPreference:
+        for location_preference in payload.locationPreferences:
             db.add(
                 UserProfileLocationPreference(
                     user_profile_id=profile.id,

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 class LocationPreferenceSelection(BaseModel):
@@ -41,7 +41,10 @@ class UserProfileUpsertRequest(BaseModel):
     state: int = Field(gt=0)
     city: int = Field(gt=0)
 
-    locationPreference: list[LocationPreferenceSelection] = Field(default_factory=list)
+    locationPreferences: list[LocationPreferenceSelection] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("locationPreferences", "locationPreference"),
+    )
     locationPreferenceQuestions: list[LocationPreferenceQuestionResponse] = Field(default_factory=list)
 
     matchingPurpose: int = Field(gt=0)

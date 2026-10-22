@@ -82,6 +82,41 @@ def _get_authenticated_user(authorization: str, db: Session) -> User:
     return user
 
 
+def _get_location_preference_selections(
+    db: Session,
+    profile_id: int,
+    user_id: int,
+) -> list[dict[str, int]]:
+    rows = (
+        db.query(UserProfileLocationPreference)
+        .filter(UserProfileLocationPreference.user_profile_id == profile_id)
+        .order_by(UserProfileLocationPreference.question_id.asc())
+        .all()
+    )
+    if not rows:
+        rows = (
+            db.query(UserProfileLocationPreference)
+            .join(UserProfile, UserProfile.id == UserProfileLocationPreference.user_profile_id)
+            .filter(UserProfile.user_id == user_id)
+            .order_by(
+                UserProfileLocationPreference.question_id.asc(),
+                UserProfileLocationPreference.user_profile_id.asc(),
+            )
+            .all()
+        )
+
+    selections_by_question = {}
+    for row in rows:
+        selections_by_question.setdefault(row.question_id, row)
+    return [
+        {
+            "question_id": row.question_id,
+            "selected_answer_id": row.selected_answer_id,
+        }
+        for row in selections_by_question.values()
+    ]
+
+
 @router.get("/users/me/profile", response_model=UserProfileResponse)
 def get_my_profile(
     authorization: str = Header(default=""),
@@ -175,12 +210,7 @@ def get_my_profile(
             )
         )
 
-    location_preferences = (
-        db.query(UserProfileLocationPreference)
-        .filter(UserProfileLocationPreference.user_profile_id == profile.id)
-        .order_by(UserProfileLocationPreference.question_id)
-        .all()
-    )
+    location_preferences = _get_location_preference_selections(db, profile.id, user.id)
 
     user_skills = (
         db.query(UserProfileUserSkill)
@@ -228,13 +258,7 @@ def get_my_profile(
         locationPreferenceQuestions=list[LocationPreferenceQuestionResponse](
             location_preferences_data
         ),
-        locationPreference=[
-            {
-                "question_id": preference.question_id,
-                "selected_answer_id": preference.selected_answer_id,
-            }
-            for preference in location_preferences
-        ],
+        locationPreferences=location_preferences,
         matchingPurpose=profile.matching_purpose_id,
         userRole=profile.user_role_id,
         cofounderRole=profile.cofounder_role_id,
@@ -387,7 +411,7 @@ def upsert_my_profile(
             UserProfileIndustry.user_profile_id == profile.id
         ).delete(synchronize_session=False)
 
-        for location_preference in payload.locationPreference:
+        for location_preference in payload.locationPreferences:
             db.add(
                 UserProfileLocationPreference(
                     user_profile_id=profile.id,
